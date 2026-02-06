@@ -6,7 +6,7 @@ const app = express();
 app.use(
   "/",
   createProxyMiddleware({
-    target: "https://proxy.lkpanio25.workers.dev",
+    target: "https://proxy-embed.nethriondev.workers.dev",
     changeOrigin: true,
     pathRewrite: { "^/": "" },
     onProxyReq: (proxyReq, req) => {
