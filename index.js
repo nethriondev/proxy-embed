@@ -22,40 +22,12 @@ const getClientIp = (req) => {
     return req.headers['x-real-ip'];
   }
   
-  if (req.headers['x-client-ip']) {
-    return req.headers['x-client-ip'];
-  }
-  
-  if (req.headers['x-cluster-client-ip']) {
-    return req.headers['x-cluster-client-ip'];
-  }
-  
-  if (req.headers['x-forwarded']) {
-    const forwarded = req.headers['x-forwarded'].split(',')[0]?.trim();
-    if (forwarded) return forwarded;
-  }
-  
-  if (req.headers['forwarded']) {
-    const match = req.headers['forwarded'].match(/for=([^;]+)/);
-    if (match && match[1]) {
-      return match[1].replace(/"/g, '');
-    }
-  }
-  
   if (req.ip) {
     return req.ip;
   }
   
-  if (req.connection && req.connection.remoteAddress) {
-    return req.connection.remoteAddress;
-  }
-  
   if (req.socket && req.socket.remoteAddress) {
     return req.socket.remoteAddress;
-  }
-  
-  if (req.connection && req.connection.socket && req.connection.socket.remoteAddress) {
-    return req.connection.socket.remoteAddress;
   }
   
   return '0.0.0.0';
@@ -69,19 +41,12 @@ app.use((req, res, next) => {
 app.use(
   "/",
   createProxyMiddleware({
-    target: "https://proxy-embed.nethriondev.workers.dev",
+    target: "https://apiremake-production.up.railway.app",
     changeOrigin: true,
     pathRewrite: { "^/": "" },
     onProxyReq: (proxyReq, req) => {
       proxyReq.setHeader("X-Forwarded-For", req.clientIp);
       proxyReq.setHeader("X-Real-IP", req.clientIp);
-      proxyReq.setHeader("X-Client-IP", req.clientIp);
-      proxyReq.setHeader("CF-Connecting-IP", req.clientIp);
-      
-      const existingForwardedFor = req.headers['x-forwarded-for'];
-      if (existingForwardedFor && existingForwardedFor !== req.clientIp) {
-        proxyReq.setHeader("X-Forwarded-For", `${existingForwardedFor}, ${req.clientIp}`);
-      }
       
       if (req.headers['user-agent']) {
         proxyReq.setHeader("User-Agent", req.headers['user-agent']);
@@ -95,6 +60,18 @@ app.use(
         proxyReq.setHeader("Accept-Language", req.headers['accept-language']);
       }
       
+      if (req.headers['content-type']) {
+        proxyReq.setHeader("Content-Type", req.headers['content-type']);
+      }
+      
+      if (req.headers['authorization']) {
+        proxyReq.setHeader("Authorization", req.headers['authorization']);
+      }
+      
+      if (req.headers['cookie']) {
+        proxyReq.setHeader("Cookie", req.headers['cookie']);
+      }
+      
       if (req.headers['referer']) {
         proxyReq.setHeader("Referer", req.headers['referer']);
       }
@@ -102,20 +79,12 @@ app.use(
       if (req.headers['origin']) {
         proxyReq.setHeader("Origin", req.headers['origin']);
       }
-      
-      if (req.headers['cookie']) {
-        proxyReq.setHeader("Cookie", req.headers['cookie']);
-      }
-      
-      if (req.headers['authorization']) {
-        proxyReq.setHeader("Authorization", req.headers['authorization']);
-      }
     },
     onProxyRes: (proxyRes, req, res) => {
       proxyRes.headers['access-control-allow-origin'] = '*';
-      proxyRes.headers['access-control-allow-headers'] = '*';
       proxyRes.headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-      proxyRes.headers['access-control-allow-credentials'] = 'true';
+      proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With';
+      proxyRes.headers['access-control-expose-headers'] = '*';
     },
     onError: (err, req, res) => {
       res.status(500).json({ 
@@ -128,16 +97,21 @@ app.use(
 
 app.options("*", (req, res) => {
   res.header('access-control-allow-origin', '*');
-  res.header('access-control-allow-headers', '*');
   res.header('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('access-control-allow-credentials', 'true');
+  res.header('access-control-allow-headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('access-control-expose-headers', '*');
   res.sendStatus(200);
 });
 
 app.get("/debug", (req, res) => {
   res.json({
     ip: req.clientIp,
-    headers: req.headers,
+    headers: {
+      'x-forwarded-for': req.headers['x-forwarded-for'],
+      'cf-connecting-ip': req.headers['cf-connecting-ip'],
+      'x-real-ip': req.headers['x-real-ip'],
+      'user-agent': req.headers['user-agent']
+    },
     trustProxy: app.get('trust proxy')
   });
 });
@@ -145,4 +119,5 @@ app.get("/debug", (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Proxy server running on port ${port}`);
+  console.log(`Target: https://apiremake-production.up.railway.app`);
 });
