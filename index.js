@@ -103,19 +103,6 @@ app.options("*", (req, res) => {
   res.sendStatus(200);
 });
 
-app.get("/debug", (req, res) => {
-  res.json({
-    ip: req.clientIp,
-    headers: {
-      'x-forwarded-for': req.headers['x-forwarded-for'],
-      'cf-connecting-ip': req.headers['cf-connecting-ip'],
-      'x-real-ip': req.headers['x-real-ip'],
-      'user-agent': req.headers['user-agent']
-    },
-    trustProxy: app.get('trust proxy')
-  });
-});
-
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Proxy server running on port ${port}`);
