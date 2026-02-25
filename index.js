@@ -1,6 +1,8 @@
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 
+const worker_proxy = "https://proxy-embed.nethriondev.workers.dev";
+
 const app = express();
 
 app.set('trust proxy', true);
@@ -41,7 +43,7 @@ app.use((req, res, next) => {
 app.use(
     "/",
     createProxyMiddleware({
-        target: "https://proxy-embed.nethriondev.workers.dev",
+        target: worker_proxy,
         changeOrigin: true,
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
@@ -106,5 +108,5 @@ app.options("*", (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Proxy server running on port ${port}`);
-    console.log(`Target: https://apiremake-production.up.railway.app`);
+    console.log(`Target: ${worker_proxy}`);
 });
