@@ -40,12 +40,20 @@ app.use((req, res, next) => {
     next();
 });
 
+const isStreamingRequest = (req) => {
+    const accept = req.headers['accept'] || '';
+    return accept.includes('text/event-stream') || 
+           accept.includes('application/stream+json') ||
+           req.headers['x-stream'] === 'true';
+};
 app.use(
     "/",
     createProxyMiddleware({
         target: worker_proxy,
         changeOrigin: true,
         pathRewrite: { "^/": "" },
+        proxyTimeout: 0, // No timeout for streaming
+        timeout: 0, // No timeout
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
@@ -81,12 +89,27 @@ app.use(
             if (req.headers['origin']) {
                 proxyReq.setHeader("Origin", req.headers['origin']);
             }
+
+            if (req.headers['connection']) {
+                proxyReq.setHeader("Connection", req.headers['connection']);
+            }
+
+            if (req.headers['cache-control']) {
+                proxyReq.setHeader("Cache-Control", req.headers['cache-control']);
+            }
         },
         onProxyRes: (proxyRes, req, res) => {
             proxyRes.headers['access-control-allow-origin'] = '*';
             proxyRes.headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-            proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With';
+            proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream';
             proxyRes.headers['access-control-expose-headers'] = '*';
+            
+            if (isStreamingRequest(req)) {
+                proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
+                proxyRes.headers['x-accel-buffering'] = 'no';
+                proxyRes.headers['connection'] = 'keep-alive';
+                delete proxyRes.headers['content-length'];
+            }
         },
         onError: (err, req, res) => {
             res.status(500).json({
@@ -100,7 +123,7 @@ app.use(
 app.options("*", (req, res) => {
     res.header('access-control-allow-origin', '*');
     res.header('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('access-control-allow-headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('access-control-allow-headers', 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream');
     res.header('access-control-expose-headers', '*');
     res.sendStatus(200);
 });
