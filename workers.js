@@ -1,6 +1,8 @@
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
+export default {
+  async fetch(request, env, ctx) {
+    return handleRequest(request);
+  }
+};
 
 async function handleRequest(request) {
   const clientIP = request.headers.get('cf-connecting-ip') || request.headers.get('X-Forwarded-Host') || '';
@@ -14,7 +16,7 @@ async function handleRequest(request) {
     url.hostname = hostname;
     url.protocol = 'https:';
     url.port = '443';
-    return fetch(url, {
+    return fetch(url.toString(), {
       method: request.method,
       headers: newHeaders,
       body: request.body,
