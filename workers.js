@@ -20,7 +20,7 @@ async function handleRequest(request) {
       method: request.method,
       headers: newHeaders,
       body: request.body,
-      cf: { cacheTtl: 0 }
+      cf: { cacheTtl: 120 }
     });
   }
 
