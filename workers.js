@@ -22,8 +22,7 @@ async function handleRequest(request) {
     url.protocol = 'https:';
     url.port = '443';
     
-    if (isStreamingRequest) {
-      return fetch(url.toString(), {
+    return fetch(url.toString(), {
         method: request.method,
         headers: newHeaders,
         body: request.body,
@@ -32,14 +31,6 @@ async function handleRequest(request) {
           cacheEverything: false,
         }
       });
-    } else {
-      return fetch(url.toString(), {
-        method: request.method,
-        headers: newHeaders,
-        body: request.body,
-        cf: { cacheTtl: 3 , cacheEverything: true }
-      });
-    }
   }
 
   const response = await tryFetch('apiremake-production.up.railway.app');

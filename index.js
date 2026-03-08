@@ -52,8 +52,8 @@ app.use(
         target: worker_proxy,
         changeOrigin: true,
         pathRewrite: { "^/": "" },
-        proxyTimeout: 0, // No timeout for streaming
-        timeout: 0, // No timeout
+        proxyTimeout: 0, 
+        timeout: 0,
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
