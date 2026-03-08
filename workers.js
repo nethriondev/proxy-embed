@@ -37,7 +37,7 @@ async function handleRequest(request) {
         method: request.method,
         headers: newHeaders,
         body: request.body,
-        cf: { cacheTtl: 120 }
+        cf: { cacheTtl: 3 , cacheEverything: true }
       });
     }
   }
