@@ -1,7 +1,28 @@
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
+const fs = require("fs");
 
-const worker_proxy = "https://proxy-embed.nethriondev.workers.dev";
+let proxyUrls = [];
+
+try {
+    const configPath = "./proxy-config.json";
+    if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        proxyUrls = config.proxyUrls;
+    }
+} catch (err) {
+    console.log("No proxy-config.json found, checking env...");
+}
+
+if (proxyUrls.length === 0 && process.env.PROXY_URLS) {
+    proxyUrls = JSON.parse(process.env.PROXY_URLS);
+}
+
+if (proxyUrls.length === 0) {
+    proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
+}
+
+let currentProxyIndex = 0;
 
 const app = express();
 
@@ -46,14 +67,25 @@ const isStreamingRequest = (req) => {
            accept.includes('application/stream+json') ||
            req.headers['x-stream'] === 'true';
 };
+
+let currentProxy = proxyUrls[0];
+
+const tryNextProxy = () => {
+    currentProxyIndex = (currentProxyIndex + 1) % proxyUrls.length;
+    currentProxy = proxyUrls[currentProxyIndex];
+    console.log(`Switching to proxy: ${currentProxy}`);
+};
+
 app.use(
     "/",
     createProxyMiddleware({
-        target: worker_proxy,
+        router: (req) => {
+            return currentProxy;
+        },
         changeOrigin: true,
         pathRewrite: { "^/": "" },
-        proxyTimeout: 0, 
-        timeout: 0,
+        proxyTimeout: 10000,
+        timeout: 10000,
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
@@ -112,9 +144,13 @@ app.use(
             }
         },
         onError: (err, req, res) => {
+            console.error(`Proxy error for ${currentProxy}:`, err.message);
+            tryNextProxy();
+            
             res.status(500).json({
                 error: "Proxy Error",
-                message: err.message
+                message: err.message,
+                nextProxy: currentProxy
             });
         }
     })
@@ -131,5 +167,6 @@ app.options("*", (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Proxy server running on port ${port}`);
-    console.log(`Target: ${worker_proxy}`);
+    console.log(`Available proxies: ${proxyUrls.join(', ')}`);
+    console.log(`Current proxy: ${currentProxy}`);
 });
