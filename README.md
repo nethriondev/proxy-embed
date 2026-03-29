@@ -42,21 +42,13 @@ PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev","https://
 
 Priority: JSON file → Environment variable → Default
 
-Showcase
-
-Before (Direct Backend Access)
-
+## Screenshots
+Before:
 ![Before](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/before.jpg)
-
-Your real backend URL is exposed to clients
-
-After (Using Proxy Embed)
-
+After:
 ![After](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/after.jpg)
 
-Only proxy URL is visible, backend stays hidden
-
-Quick Start
+## Quick Start
 
 1. Install dependencies:
    ```bash
@@ -68,7 +60,7 @@ Quick Start
    npm start
    ```
 
-Deploy to Vercel
+## Deploy to Vercel
 
 Set environment variable PROXY_URLS in Vercel dashboard:
 
@@ -76,10 +68,6 @@ Set environment variable PROXY_URLS in Vercel dashboard:
 PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev"]'
 ```
 
-How Failover Works
+### How Failover Works
 
 When a request fails, the proxy immediately switches to the next URL in your list. No counting, no waiting, no downtime.
-
-Author
-
-Kenneth Panio
