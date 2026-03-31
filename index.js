@@ -14,12 +14,24 @@ try {
     console.log("No proxy-config.json found, checking env...");
 }
 
-if (proxyUrls.length === 0 && process.env.PROXY_URLS) {
-    proxyUrls = JSON.parse(process.env.PROXY_URLS);
+if (proxyUrls.length === 0) {
+    if (process.env.PROXY_URL) {
+        proxyUrls = [process.env.PROXY_URL];
+        console.log(`Using single proxy from PROXY_URL: ${process.env.PROXY_URL}`);
+    } else if (process.env.PROXY_URLS) {
+        try {
+            proxyUrls = JSON.parse(process.env.PROXY_URLS);
+            console.log(`Using multiple proxies from PROXY_URLS: ${proxyUrls.join(', ')}`);
+        } catch (err) {
+            console.error("Error parsing PROXY_URLS, falling back to default");
+            proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
+        }
+    }
 }
 
 if (proxyUrls.length === 0) {
     proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
+    console.log("Using default proxy");
 }
 
 let currentProxyIndex = 0;
@@ -71,9 +83,13 @@ const isStreamingRequest = (req) => {
 let currentProxy = proxyUrls[0];
 
 const tryNextProxy = () => {
-    currentProxyIndex = (currentProxyIndex + 1) % proxyUrls.length;
-    currentProxy = proxyUrls[currentProxyIndex];
-    console.log(`Switching to proxy: ${currentProxy}`);
+    if (proxyUrls.length > 1) {
+        currentProxyIndex = (currentProxyIndex + 1) % proxyUrls.length;
+        currentProxy = proxyUrls[currentProxyIndex];
+        console.log(`Switching to proxy: ${currentProxy}`);
+    } else {
+        console.log(`Only one proxy available, cannot rotate: ${currentProxy}`);
+    }
 };
 
 app.use(
@@ -84,8 +100,6 @@ app.use(
         },
         changeOrigin: true,
         pathRewrite: { "^/": "" },
-        proxyTimeout: 10000,
-        timeout: 10000,
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
@@ -145,13 +159,21 @@ app.use(
         },
         onError: (err, req, res) => {
             console.error(`Proxy error for ${currentProxy}:`, err.message);
-            tryNextProxy();
             
-            res.status(500).json({
-                error: "Proxy Error",
-                message: err.message,
-                nextProxy: currentProxy
-            });
+            if (proxyUrls.length > 1) {
+                tryNextProxy();
+                res.status(500).json({
+                    error: "Proxy Error",
+                    message: err.message,
+                    nextProxy: currentProxy
+                });
+            } else {
+                res.status(500).json({
+                    error: "Proxy Error",
+                    message: err.message,
+                    note: "Only one proxy configured"
+                });
+            }
         }
     })
 );
@@ -169,4 +191,5 @@ app.listen(port, () => {
     console.log(`Proxy server running on port ${port}`);
     console.log(`Available proxies: ${proxyUrls.join(', ')}`);
     console.log(`Current proxy: ${currentProxy}`);
+    console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
 });

@@ -37,6 +37,10 @@ Choose one of three ways to configure your proxy URLs:
 Option 2: Environment Variable
 
 ```bash
+PROXY_URL="https://proxy1.workers.dev"
+```
+OR
+```bash
 PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev","https://proxy3.workers.dev"]'
 ```
 
@@ -59,14 +63,6 @@ After:
    ```bash
    npm start
    ```
-
-## Deploy to Vercel
-
-Set environment variable PROXY_URLS in Vercel dashboard:
-
-```
-PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev"]'
-```
 
 ### How Failover Works
 
