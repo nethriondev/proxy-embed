@@ -47,9 +47,10 @@ PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev","https://
 Priority: JSON file → Environment variable → Default
 
 ## Screenshots
-Before:
+### Before:
 ![Before](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/before.jpg)
-After:
+
+### After:
 ![After](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/after.jpg)
 
 ## Quick Start
