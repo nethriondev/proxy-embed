@@ -41,31 +41,51 @@ const app = express();
 app.set('trust proxy', true);
 
 const getClientIp = (req) => {
-    const forwardedFor = req.headers['x-forwarded-for'];
-    if (forwardedFor) {
-        const ips = forwardedFor.split(',').map(ip => ip.trim());
-        if (ips.length > 0 && ips[0]) {
-            return ips[0];
-        }
+  const forwardedHeader = req.headers['forwarded'];
+  if (forwardedHeader) {
+    const forMatch = forwardedHeader.match(/for=([^;]+)/);
+    if (forMatch && forMatch[1]) {
+      let ip = forMatch[1].replace(/^"|"$/g, '');
+      ip = ip.replace(/^\[|\]$/g, '');
+      if (ip && ip !== 'unknown') return ip;
     }
+  }
 
-    if (req.headers['cf-connecting-ip']) {
-        return req.headers['cf-connecting-ip'];
-    }
+  if (req.headers['x-vercel-forwarded-for']) {
+    const ips = req.headers['x-vercel-forwarded-for'].split(',');
+    const firstIp = ips[0]?.trim();
+    if (firstIp) return firstIp;
+  }
 
-    if (req.headers['x-real-ip']) {
-        return req.headers['x-real-ip'];
-    }
+  if (req.headers['x-vercel-proxied-for']) {
+    const ips = req.headers['x-vercel-proxied-for'].split(',');
+    const firstIp = ips[0]?.trim();
+    if (firstIp) return firstIp;
+  }
 
-    if (req.ip) {
-        return req.ip;
-    }
+  if (req.headers['x-forwarded-for']) {
+    const ips = req.headers['x-forwarded-for'].split(',');
+    const firstIp = ips[0]?.trim();
+    if (firstIp) return firstIp;
+  }
 
-    if (req.socket && req.socket.remoteAddress) {
-        return req.socket.remoteAddress;
-    }
+  if (req.headers['x-real-ip']) {
+    return req.headers['x-real-ip'];
+  }
 
-    return '0.0.0.0';
+  if (req.headers['cf-connecting-ip']) {
+    return req.headers['cf-connecting-ip'];
+  }
+  
+  if (req.clientIp) {
+    return req.clientIp;
+  }
+  
+  if (req.socket?.remoteAddress) {
+    return req.socket.remoteAddress;
+  }
+
+  return req.ip || 'unknown';
 };
 
 app.use((req, res, next) => {
