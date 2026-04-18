@@ -95,21 +95,19 @@ const tryNextProxy = () => {
 app.use(
     "/",
     createProxyMiddleware({
-        router: (req) => {
-            return currentProxy + req.url;
-        },
+        target: currentProxy,
         ws: true,
         changeOrigin: true,
         xfwd: true,
+        
         onProxyReq: (proxyReq, req) => {
             const originalHost = req.headers['host'] || req.get('host');
-            const originalProto = req.headers['x-forwarded-proto'] || 'https';
-            
+
+            proxyReq.setHeader("Host", originalHost);
             proxyReq.setHeader("X-Forwarded-Host", originalHost);
-            proxyReq.setHeader("X-Forwarded-Proto", originalProto);
+            proxyReq.setHeader("X-Forwarded-Proto", "https");
             proxyReq.setHeader("X-Original-Host", originalHost);
-            proxyReq.setHeader("X-Vercel-Host", originalHost); 
-            proxyReq.setHeader("Host", originalHost); 
+            
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
 
@@ -144,6 +142,9 @@ app.use(
             if (req.headers['origin']) {
                 proxyReq.setHeader("Origin", req.headers['origin']);
             }
+            
+            // Debug log
+            console.log(`Proxying: ${req.method} ${req.url} -> ${currentProxy}${req.url} (Host: ${originalHost})`);
         },
         onProxyRes: (proxyRes, req, res) => {
             proxyRes.headers['access-control-allow-origin'] = '*';
