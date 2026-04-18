@@ -1,8 +1,6 @@
-const express = require("express");
+add ws: true and agent:  const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const fs = require("fs");
-const http = require("http");
-const https = require("https");
 
 let proxyUrls = [];
 
@@ -41,23 +39,33 @@ let currentProxyIndex = 0;
 const app = express();
 
 app.set('trust proxy', true);
-app.disable('x-powered-by');
 
 const getClientIp = (req) => {
-    if (req.headers['x-forwarded-for']) {
-        const ips = req.headers['x-forwarded-for'].split(',');
-        return ips[0].trim();
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (forwardedFor) {
+        const ips = forwardedFor.split(',').map(ip => ip.trim());
+        if (ips.length > 0 && ips[0]) {
+            return ips[0];
+        }
     }
-    
+
     if (req.headers['cf-connecting-ip']) {
         return req.headers['cf-connecting-ip'];
     }
-    
+
     if (req.headers['x-real-ip']) {
         return req.headers['x-real-ip'];
     }
-    
-    return req.ip || req.socket?.remoteAddress || '0.0.0.0';
+
+    if (req.ip) {
+        return req.ip;
+    }
+
+    if (req.socket && req.socket.remoteAddress) {
+        return req.socket.remoteAddress;
+    }
+
+    return '0.0.0.0';
 };
 
 app.use((req, res, next) => {
@@ -84,85 +92,89 @@ const tryNextProxy = () => {
     }
 };
 
-const agentConfig = {
-    keepAlive: true,
-    keepAliveMsecs: 30000,
-    maxSockets: 50,
-    maxFreeSockets: 10,
-    scheduling: 'fifo',
-    noDelay: true,
-};
-
-const httpAgent = new http.Agent(agentConfig);
-const httpsAgent = new https.Agent(agentConfig);
-
-const getAgent = (targetUrl) => {
-    if (targetUrl.startsWith('https://')) {
-        return httpsAgent;
-    }
-    return httpAgent;
-};
-
 app.use(
     "/",
     createProxyMiddleware({
-        target: currentProxy,
-        router: (req) => currentProxy,
+        router: (req) => {
+            return currentProxy;
+        },
         ws: true,
         changeOrigin: true,
-        agent: getAgent(currentProxy),
+        xfwd: true,     
         pathRewrite: { "^/": "" },
-        xfwd: true,
-        
         onProxyReq: (proxyReq, req) => {
-            if (req.headers['host']) {
-                proxyReq.setHeader("X-Forwarded-Host", req.headers.host);
+            proxyReq.setHeader("X-Forwarded-For", req.clientIp);
+            proxyReq.setHeader("X-Real-IP", req.clientIp);
+
+            if (req.headers['user-agent']) {
+                proxyReq.setHeader("User-Agent", req.headers['user-agent']);
             }
 
-            const headers = [
-                'user-agent', 'accept', 'accept-language', 'content-type',
-                'authorization', 'cookie', 'referer', 'origin',
-                'cache-control', 'accept-encoding'
-            ];
-            
-            headers.forEach(header => {
-                if (req.headers[header]) {
-                    proxyReq.setHeader(header, req.headers[header]);
-                }
-            });
+            if (req.headers['accept']) {
+                proxyReq.setHeader("Accept", req.headers['accept']);
+            }
+
+            if (req.headers['accept-language']) {
+                proxyReq.setHeader("Accept-Language", req.headers['accept-language']);
+            }
+
+            if (req.headers['content-type']) {
+                proxyReq.setHeader("Content-Type", req.headers['content-type']);
+            }
+
+            if (req.headers['authorization']) {
+                proxyReq.setHeader("Authorization", req.headers['authorization']);
+            }
+
+            if (req.headers['cookie']) {
+                proxyReq.setHeader("Cookie", req.headers['cookie']);
+            }
+
+            if (req.headers['referer']) {
+                proxyReq.setHeader("Referer", req.headers['referer']);
+            }
+
+            if (req.headers['origin']) {
+                proxyReq.setHeader("Origin", req.headers['origin']);
+            }
+
+            if (req.headers['connection']) {
+                proxyReq.setHeader("Connection", req.headers['connection']);
+            }
+
+            if (req.headers['cache-control']) {
+                proxyReq.setHeader("Cache-Control", req.headers['cache-control']);
+            }
         },
-        
         onProxyRes: (proxyRes, req, res) => {
             proxyRes.headers['access-control-allow-origin'] = '*';
             proxyRes.headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-            proxyRes.headers['access-control-allow-headers'] = '*';
+            proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream';
             proxyRes.headers['access-control-expose-headers'] = '*';
             
             if (isStreamingRequest(req)) {
                 proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
                 proxyRes.headers['x-accel-buffering'] = 'no';
+                proxyRes.headers['connection'] = 'keep-alive';
                 delete proxyRes.headers['content-length'];
             }
         },
-        
         onError: (err, req, res) => {
             console.error(`Proxy error for ${currentProxy}:`, err.message);
             
-            if (!res.headersSent) {
-                if (proxyUrls.length > 1) {
-                    tryNextProxy();
-                    res.status(500).json({
-                        error: "Proxy Error",
-                        message: err.message,
-                        nextProxy: currentProxy
-                    });
-                } else {
-                    res.status(500).json({
-                        error: "Proxy Error",
-                        message: err.message,
-                        note: "Only one proxy configured"
-                    });
-                }
+            if (proxyUrls.length > 1) {
+                tryNextProxy();
+                res.status(500).json({
+                    error: "Proxy Error",
+                    message: err.message,
+                    nextProxy: currentProxy
+                });
+            } else {
+                res.status(500).json({
+                    error: "Proxy Error",
+                    message: err.message,
+                    note: "Only one proxy configured"
+                });
             }
         }
     })
@@ -171,31 +183,15 @@ app.use(
 app.options("*", (req, res) => {
     res.header('access-control-allow-origin', '*');
     res.header('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('access-control-allow-headers', '*');
+    res.header('access-control-allow-headers', 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream');
     res.header('access-control-expose-headers', '*');
-    res.sendStatus(204);
+    res.sendStatus(200);
 });
 
 const port = process.env.PORT || 3000;
-const server = app.listen(port, () => {
+app.listen(port, () => {
     console.log(`Proxy server running on port ${port}`);
     console.log(`Available proxies: ${proxyUrls.join(', ')}`);
     console.log(`Current proxy: ${currentProxy}`);
     console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
-});
-
-process.on('SIGTERM', () => {
-    server.close(() => {
-        httpAgent.destroy();
-        httpsAgent.destroy();
-        process.exit(0);
-    });
-});
-
-process.on('SIGINT', () => {
-    server.close(() => {
-        httpAgent.destroy();
-        httpsAgent.destroy();
-        process.exit(0);
-    });
 });
