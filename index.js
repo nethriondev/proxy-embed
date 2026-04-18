@@ -95,19 +95,14 @@ const tryNextProxy = () => {
 app.use(
     "/",
     createProxyMiddleware({
-        target: currentProxy,
+        router: (req) => {
+            return currentProxy;
+        },
         ws: true,
         changeOrigin: true,
         xfwd: true,
-        
+        pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
-            const originalHost = req.headers['host'] || req.get('host');
-
-            proxyReq.setHeader("Host", originalHost);
-            proxyReq.setHeader("X-Forwarded-Host", originalHost);
-            proxyReq.setHeader("X-Forwarded-Proto", "https");
-            proxyReq.setHeader("X-Original-Host", originalHost);
-            
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
 
@@ -142,9 +137,14 @@ app.use(
             if (req.headers['origin']) {
                 proxyReq.setHeader("Origin", req.headers['origin']);
             }
-            
-            // Debug log
-            console.log(`Proxying: ${req.method} ${req.url} -> ${currentProxy}${req.url} (Host: ${originalHost})`);
+
+            if (req.headers['connection']) {
+                proxyReq.setHeader("Connection", req.headers['connection']);
+            }
+
+            if (req.headers['cache-control']) {
+                proxyReq.setHeader("Cache-Control", req.headers['cache-control']);
+            }
         },
         onProxyRes: (proxyRes, req, res) => {
             proxyRes.headers['access-control-allow-origin'] = '*';
