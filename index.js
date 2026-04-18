@@ -98,7 +98,6 @@ app.use(
         router: (req) => {
             return currentProxy;
         },
-        ws: true,
         changeOrigin: true,
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
