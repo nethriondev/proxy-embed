@@ -103,6 +103,11 @@ app.use(
         xfwd: true,
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
+            const originalHost = req.headers['host'] || req.get('host');
+            proxyReq.setHeader("X-Forwarded-Host", originalHost);
+            proxyReq.setHeader("X-Forwarded-Proto", "https");
+            proxyReq.setHeader("X-Original-Host", originalHost);
+            
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
 
