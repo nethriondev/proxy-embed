@@ -98,8 +98,8 @@ app.use(
         router: (req) => {
             return currentProxy;
         },
-        ws: true,
         changeOrigin: true,
+        xfwd: true,     
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
