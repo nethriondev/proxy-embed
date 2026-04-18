@@ -5,11 +5,26 @@ export default {
 };
 
 async function handleRequest(request) {
-  const clientIP = request.headers.get('cf-connecting-ip') || request.headers.get('X-Forwarded-Host') || '';
+  const url = new URL(request.url);
+  const originalHost = url.hostname;
+  const clientIP = request.headers.get('cf-connecting-ip') || 
+                   request.headers.get('x-forwarded-for') || 
+                   request.headers.get('x-real-ip') || 
+                   '';
+  
   const newHeaders = new Headers(request.headers);
-  newHeaders.set('x-forwarded-host', clientIP);
+  
+  newHeaders.set('x-forwarded-host', originalHost);
+  newHeaders.set('x-forwarded-proto', 'https');
+  newHeaders.set('x-original-host', originalHost);
+  
+  if (clientIP) {
+    newHeaders.set('x-forwarded-for', clientIP);
+    newHeaders.set('x-real-ip', clientIP);
+  }
+  
+  newHeaders.set('host', originalHost);
   newHeaders.set('cf-connecting-ip', clientIP);
-  newHeaders.delete('host');
 
   const acceptHeader = request.headers.get('accept') || '';
   const isStreamingRequest = acceptHeader.includes('text/event-stream') || 
@@ -17,12 +32,12 @@ async function handleRequest(request) {
                             request.headers.get('x-stream') === 'true';
 
   async function tryFetch(hostname) {
-    const url = new URL(request.url);
-    url.hostname = hostname;
-    url.protocol = 'https:';
-    url.port = '443';
+    const proxyUrl = new URL(request.url);
+    proxyUrl.hostname = hostname;
+    proxyUrl.protocol = 'https:';
+    proxyUrl.port = '443';
     
-    return fetch(url.toString(), {
+    return fetch(proxyUrl.toString(), {
         method: request.method,
         headers: newHeaders,
         body: request.body,
