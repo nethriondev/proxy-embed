@@ -57,10 +57,6 @@ const getClientIp = (req) => {
         return req.headers['x-real-ip'];
     }
     
-    if (req.headers['x-forwarded-host']) {
-        return req.headers['x-forwarded-host'].split(',')[0].trim();
-    }
-    
     return req.ip || req.socket?.remoteAddress || '0.0.0.0';
 };
 
@@ -111,14 +107,14 @@ app.use(
         xfwd: true,
         
         onProxyReq: (proxyReq, req) => {
-            proxyReq.setHeader("X-Forwarded-For", req.clientIp);
-            proxyReq.setHeader("X-Real-IP", req.clientIp);
-            proxyReq.setHeader("X-Forwarded-Host", req.headers.host || '');
+            if (req.headers['host']) {
+                proxyReq.setHeader("X-Forwarded-Host", req.headers.host);
+            }
 
             const headers = [
                 'user-agent', 'accept', 'accept-language', 'content-type',
-                'authorization', 'cookie', 'referer', 'origin', 'connection',
-                'cache-control', 'accept-encoding', 'x-request-id', 'x-correlation-id'
+                'authorization', 'cookie', 'referer', 'origin',
+                'cache-control', 'accept-encoding'
             ];
             
             headers.forEach(header => {
@@ -137,7 +133,6 @@ app.use(
             if (isStreamingRequest(req)) {
                 proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
                 proxyRes.headers['x-accel-buffering'] = 'no';
-                proxyRes.headers['connection'] = 'keep-alive';
                 delete proxyRes.headers['content-length'];
             }
         },
@@ -145,19 +140,21 @@ app.use(
         onError: (err, req, res) => {
             console.error(`Proxy error for ${currentProxy}:`, err.message);
             
-            if (proxyUrls.length > 1) {
-                tryNextProxy();
-                res.status(500).json({
-                    error: "Proxy Error",
-                    message: err.message,
-                    nextProxy: currentProxy
-                });
-            } else {
-                res.status(500).json({
-                    error: "Proxy Error",
-                    message: err.message,
-                    note: "Only one proxy configured"
-                });
+            if (!res.headersSent) {
+                if (proxyUrls.length > 1) {
+                    tryNextProxy();
+                    res.status(500).json({
+                        error: "Proxy Error",
+                        message: err.message,
+                        nextProxy: currentProxy
+                    });
+                } else {
+                    res.status(500).json({
+                        error: "Proxy Error",
+                        message: err.message,
+                        note: "Only one proxy configured"
+                    });
+                }
             }
         }
     })
