@@ -1,4 +1,4 @@
-add ws: true and agent:  const express = require("express");
+const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const fs = require("fs");
 
@@ -98,8 +98,9 @@ app.use(
         router: (req) => {
             return currentProxy;
         },
+        ws: true,
         changeOrigin: true,
-        xfwd: true,     
+        xfwd: true,
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
