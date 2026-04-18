@@ -96,13 +96,21 @@ const agentConfig = {
 const httpAgent = new http.Agent(agentConfig);
 const httpsAgent = new https.Agent(agentConfig);
 
+const getAgent = (targetUrl) => {
+    if (targetUrl.startsWith('https://')) {
+        return httpsAgent;
+    }
+    return httpAgent;
+};
+
 app.use(
     "/",
     createProxyMiddleware({
+        target: currentProxy,
         router: (req) => currentProxy,
         ws: true,
         changeOrigin: true,
-        agent: (req) => currentProxy.startsWith('https://') ? httpsAgent : httpAgent,
+        agent: getAgent(currentProxy),
         pathRewrite: { "^/": "" },
         xfwd: true,
         
