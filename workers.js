@@ -12,8 +12,19 @@ async function handleRequest(request) {
                    request.headers.get('x-real-ip') || 
                    '';
   
+  const acceptHeader = request.headers.get('accept') || '';
+  const isStreamingRequest = acceptHeader.includes('text/event-stream') || 
+                            acceptHeader.includes('application/stream+json') ||
+                            request.headers.get('x-stream') === 'true';
+
+  const proxyUrl = new URL(request.url);
+  proxyUrl.hostname = 'apiremake-production.up.railway.app';
+  proxyUrl.protocol = 'https:';
+  proxyUrl.port = '443';
+  
   const newHeaders = new Headers(request.headers);
   
+  newHeaders.set('host', originalHost);
   newHeaders.set('x-forwarded-host', originalHost);
   newHeaders.set('x-forwarded-proto', 'https');
   newHeaders.set('x-original-host', originalHost);
@@ -21,34 +32,20 @@ async function handleRequest(request) {
   if (clientIP) {
     newHeaders.set('x-forwarded-for', clientIP);
     newHeaders.set('x-real-ip', clientIP);
+    newHeaders.set('cf-connecting-ip', clientIP);
   }
   
-  newHeaders.set('host', originalHost);
-  newHeaders.set('cf-connecting-ip', clientIP);
+  const modifiedRequest = new Request(proxyUrl.toString(), {
+    method: request.method,
+    headers: newHeaders,
+    body: request.body,
+    cf: {
+      cacheTtl: 0,
+      cacheEverything: false,
+    }
+  });
 
-  const acceptHeader = request.headers.get('accept') || '';
-  const isStreamingRequest = acceptHeader.includes('text/event-stream') || 
-                            acceptHeader.includes('application/stream+json') ||
-                            request.headers.get('x-stream') === 'true';
-
-  async function tryFetch(hostname) {
-    const proxyUrl = new URL(request.url);
-    proxyUrl.hostname = hostname;
-    proxyUrl.protocol = 'https:';
-    proxyUrl.port = '443';
-    
-    return fetch(proxyUrl.toString(), {
-        method: request.method,
-        headers: newHeaders,
-        body: request.body,
-        cf: {
-          cacheTtl: 0,
-          cacheEverything: false,
-        }
-      });
-  }
-
-  const response = await tryFetch('apiremake-production.up.railway.app');
+  const response = await fetch(modifiedRequest);
   
   const resHeaders = new Headers(response.headers);
   
