@@ -40,6 +40,8 @@ const app = express();
 
 app.set('trust proxy', true);
 
+app.disable('etag');
+
 const getClientIp = (req) => {
   const forwardedHeader = req.headers['forwarded'];
   if (forwardedHeader) {
@@ -173,6 +175,7 @@ app.use(
             if (isStreamingRequest(req)) {
                 proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
                 proxyRes.headers['x-accel-buffering'] = 'no';
+                proxyRes.headers['cf-cache-status'] = 'DYNAMIC';
                 proxyRes.headers['connection'] = 'keep-alive';
                 delete proxyRes.headers['content-length'];
             }

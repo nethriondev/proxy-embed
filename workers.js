@@ -81,20 +81,26 @@ export default {
     resHeaders.set('Access-Control-Allow-Origin', '*');
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream');
+    resHeaders.set('Access-Control-Expose-Headers', '*');
     
     if (isStreamingRequest) {
       resHeaders.set('Cache-Control', 'no-cache, no-transform, must-revalidate');
       resHeaders.set('X-Accel-Buffering', 'no');
+      resHeaders.set('CF-Cache-Status', 'DYNAMIC');
       resHeaders.set('Transfer-Encoding', 'chunked');
       resHeaders.set('Connection', 'keep-alive');
+      resHeaders.set('Content-Type', 'text/event-stream');
+      resHeaders.delete('content-length');
       
+      // Pass the body stream directly without waiting
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
         headers: resHeaders
       });
     } else {
-      return new Response(await response.arrayBuffer(), {
+      const body = await response.arrayBuffer();
+      return new Response(body, {
         status: response.status,
         statusText: response.statusText,
         headers: resHeaders
