@@ -36,7 +36,7 @@ if (proxyUrls.length === 0) {
 
 const LB_ALGORITHM = process.env.LB_ALGORITHM || "round-robin";
 const HEALTH_CHECK_INTERVAL = parseInt(process.env.HEALTH_CHECK_INTERVAL) || 30000;
-const HEALTH_CHECK_TIMEOUT = parseInt(process.env.HEALTH_CHECK_TIMEOUT) || 5000;
+const HEALTH_CHECK_TIMEOUT = parseInt(process.env.HEALTH_CHECK_TIMEOUT) || 10000;
 const FAILURE_THRESHOLD = parseInt(process.env.FAILURE_THRESHOLD) || 3;
 
 const weights = {};
@@ -230,7 +230,7 @@ const checkServerHealth = async (server) => {
     try {
         const startTime = Date.now();
         const response = await fetch(`${server.url}/health`, {
-            method: 'HEAD',
+            method: 'GET', // Changed from HEAD to GET
             signal: controller.signal,
             headers: { 'User-Agent': 'LoadBalancer-HealthCheck/1.0' }
         });
@@ -238,14 +238,18 @@ const checkServerHealth = async (server) => {
         const responseTime = Date.now() - startTime;
         server.responseTime = responseTime;
         
-        if (response.ok) {
+        // Consider 2xx and 3xx as healthy (not just 2xx)
+        if (response.status >= 200 && response.status < 400) {
             serverPool.markHealthy(server.url);
             return true;
         } else {
             throw new Error(`HTTP ${response.status}`);
         }
     } catch (error) {
-        serverPool.markUnhealthy(server.url, error.message);
+        // Only mark as unhealthy if it's not a timeout (which might be transient)
+        if (error.name !== 'AbortError') {
+            serverPool.markUnhealthy(server.url, error.message);
+        }
         return false;
     } finally {
         clearTimeout(timeoutId);
@@ -399,6 +403,8 @@ app.use("/", (req, res, next) => {
         target: targetServer.url,
         changeOrigin: true,
         pathRewrite: { "^/": "" },
+        proxyTimeout: 10000, // 10 second proxy timeout
+        timeout: 10000, // 10 second response timeout
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
@@ -433,7 +439,15 @@ app.use("/", (req, res, next) => {
         },
         onError: (err, req, res) => {
             trackRequest(req, res, targetServer, startTime);
-            serverPool.markUnhealthy(targetServer.url, err.message);
+            
+            // Only mark as unhealthy for certain types of errors
+            const shouldMarkUnhealthy = !err.message.includes('ECONNRESET') && 
+                                      !err.message.includes('socket hang up') &&
+                                      !err.message.includes('timeout');
+                                      
+            if (shouldMarkUnhealthy) {
+                serverPool.markUnhealthy(targetServer.url, err.message);
+            }
             
             console.error(`Proxy error for ${targetServer.url}:`, err.message);
             
@@ -445,6 +459,8 @@ app.use("/", (req, res, next) => {
                     target: nextServer.url,
                     changeOrigin: true,
                     pathRewrite: { "^/": "" },
+                    proxyTimeout: 10000,
+                    timeout: 10000,
                     onProxyReq: (proxyReq) => {
                         proxyReq.setHeader("X-Forwarded-For", req.clientIp);
                         proxyReq.setHeader("X-Retry-Count", "1");
