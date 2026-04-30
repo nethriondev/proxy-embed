@@ -91,20 +91,12 @@ export default {
       resHeaders.set('Connection', 'keep-alive');
       resHeaders.set('Content-Type', 'text/event-stream');
       resHeaders.delete('content-length');
-      
-      // Pass the body stream directly without waiting
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: resHeaders
-      });
-    } else {
-      const body = await response.arrayBuffer();
-      return new Response(body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: resHeaders
-      });
     }
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: resHeaders
+    });
   }
 };
