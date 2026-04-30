@@ -441,9 +441,8 @@ app.use("/", (req, res, next) => {
             trackRequest(req, res, targetServer, startTime);
             
             // Only mark as unhealthy for certain types of errors
-            const shouldMarkUnhealthy = !err.message.includes('ECONNRESET') && 
-                                      !err.message.includes('socket hang up') &&
-                                      !err.message.includes('timeout');
+            const shouldMarkUnhealthy = err.code && 
+                                      !['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ERR_SOCKET_CONNECT_TIMEOUT'].includes(err.code);
                                       
             if (shouldMarkUnhealthy) {
                 serverPool.markUnhealthy(targetServer.url, err.message);
@@ -465,8 +464,16 @@ app.use("/", (req, res, next) => {
                         proxyReq.setHeader("X-Forwarded-For", req.clientIp);
                         proxyReq.setHeader("X-Retry-Count", "1");
                     },
-                    onProxyRes: (proxyRes) => {
+                    onProxyRes: (proxyRes, req, res) => {
                         proxyRes.headers['x-retried'] = 'true';
+                    },
+                    onError: (err, req, res) => {
+                        res.status(502).json({
+                            error: "Proxy Error",
+                            message: err.message,
+                            failedServer: nextServer.url,
+                            timestamp: new Date().toISOString()
+                        });
                     }
                 });
                 
@@ -509,4 +516,12 @@ app.listen(port, () => {
 process.on('SIGTERM', () => {
     console.log('Closing load balancer...');
     process.exit(0);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err.message);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection:', reason);
 });
