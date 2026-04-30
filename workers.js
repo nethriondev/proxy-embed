@@ -74,19 +74,7 @@ export default {
       });
     }
 
-    let response;
-    try {
-      response = await tryFetch('apiremake-production-c9cb.up.railway.app');
-    } catch (error) {
-      return new Response(JSON.stringify({
-        error: "Proxy Error",
-        message: error.message,
-        timestamp: new Date().toISOString()
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
+    const response = await tryFetch('apiremake-production.up.railway.app');
     
     const resHeaders = new Headers(response.headers);
     
@@ -111,19 +99,7 @@ export default {
         headers: resHeaders
       });
     } else {
-      let body;
-      try {
-        body = await response.arrayBuffer();
-      } catch (error) {
-        return new Response(JSON.stringify({
-          error: "Response Error",
-          message: error.message,
-          timestamp: new Date().toISOString()
-        }), {
-          status: 502,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-      }
+      const body = await response.arrayBuffer();
       return new Response(body, {
         status: response.status,
         statusText: response.statusText,
