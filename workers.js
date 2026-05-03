@@ -74,7 +74,7 @@ export default {
       });
     }
 
-    const response = await tryFetch('apiremake-production-c9cb.up.railway.app');
+    const response = await tryFetch('apiremake-production-8382.up.railway.app');
     
     const resHeaders = new Headers(response.headers);
     
