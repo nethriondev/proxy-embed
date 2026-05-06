@@ -50,6 +50,10 @@ function getCacheTtl(url, responseContentType) {
     return 0;
   }
   
+  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
+    return 0;
+  }
+  
   if (pathname.endsWith('.m3u8') || 
       responseContentType.includes('application/vnd.apple.mpegurl') ||
       responseContentType.includes('application/x-mpegurl')) {
@@ -168,7 +172,9 @@ export default {
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
     resHeaders.set('Access-Control-Expose-Headers', '*');
     
-    if (cacheTtl > 0 && response.status === 200 && !contentType.includes('application/json')) {
+    const shouldCache = cacheTtl > 0 && response.status === 200;
+    
+    if (shouldCache) {
       const isPlaylist = contentType.includes('application/vnd.apple.mpegurl') || 
                         contentType.includes('application/dash+xml') ||
                         contentType.includes('application/x-mpegurl');
