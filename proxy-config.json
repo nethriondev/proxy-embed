@@ -1,6 +1,5 @@
 {
     "proxyUrls": [
-        "https://proxy-embed.nethriondev.workers.dev",
-        "https://apiremake-production-8382.up.railway.app"
+        "https://proxy-embed.nethriondev.workers.dev"
     ]
 }
