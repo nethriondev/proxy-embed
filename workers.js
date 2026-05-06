@@ -43,46 +43,21 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-function isCacheableMedia(request) {
-  const url = new URL(request.url);
+function getCacheTtl(url, responseContentType) {
   const pathname = url.pathname.toLowerCase();
   
-  const mediaExtensions = [
-    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico',
-    '.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.ts', '.m3u8', '.mpd',
-    '.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.m4s'
-  ];
-  
-  if (mediaExtensions.some(ext => pathname.endsWith(ext))) {
-    return true;
+  if (responseContentType.includes('application/json')) {
+    return 0;
   }
-  
-  const acceptHeader = request.headers.get('accept') || '';
-  if (acceptHeader.includes('image/') || 
-      acceptHeader.includes('video/') || 
-      acceptHeader.includes('audio/')) {
-    return true;
-  }
-  
-  if (pathname.includes('/media') || pathname.includes('/api/stream')) {
-    return true;
-  }
-  
-  return false;
-}
-
-function getCacheTtl(url, request) {
-  const pathname = url.pathname.toLowerCase();
-  const contentType = request.headers.get('content-type') || '';
   
   if (pathname.endsWith('.m3u8') || 
-      contentType.includes('application/vnd.apple.mpegurl') ||
-      contentType.includes('application/x-mpegurl')) {
+      responseContentType.includes('application/vnd.apple.mpegurl') ||
+      responseContentType.includes('application/x-mpegurl')) {
     return 43200;
   }
   
   if (pathname.endsWith('.mpd') || 
-      contentType.includes('application/dash+xml')) {
+      responseContentType.includes('application/dash+xml')) {
     return 43200;
   }
   
@@ -102,10 +77,9 @@ function getCacheTtl(url, request) {
     return 43200;
   }
   
-  if (pathname.includes('/media') || pathname.includes('/api/stream')) {
-    const expireParam = url.searchParams.get('expire');
-    if (expireParam === 'never') return 43200;
-    return 43200;
+  if (responseContentType.includes('text/html') || 
+      responseContentType.includes('application/xhtml+xml')) {
+    return 3600;
   }
   
   return 43200;
@@ -137,12 +111,10 @@ export default {
                               acceptHeader.includes('application/stream+json') ||
                               request.headers.get('x-stream') === 'true';
     
-    const isMedia = isCacheableMedia(request);
-    const cacheTtl = isMedia ? getCacheTtl(url, request) : 0;
     const cacheKey = new Request(url.toString(), request);
     let response = null;
     
-    if (isMedia && cacheTtl > 0 && request.method === 'GET') {
+    if (request.method === 'GET') {
       const cache = caches.default;
       const cachedResponse = await cache.match(cacheKey);
       
@@ -172,8 +144,8 @@ export default {
         method: request.method,
         headers: newHeaders,
         cf: {
-          polish: isMedia && cacheTtl > 0 ? 'lossy' : 'off',
-          mirage: isMedia ? true : false,
+          polish: 'lossy',
+          mirage: true,
         }
       };
       
@@ -188,14 +160,15 @@ export default {
     
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);
+    const contentType = response.headers.get('content-type') || '';
+    const cacheTtl = getCacheTtl(url, contentType);
     
     resHeaders.set('Access-Control-Allow-Origin', '*');
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
     resHeaders.set('Access-Control-Expose-Headers', '*');
     
-    if (isMedia && cacheTtl > 0 && response.status === 200) {
-      const contentType = response.headers.get('content-type') || '';
+    if (cacheTtl > 0 && response.status === 200 && !contentType.includes('application/json')) {
       const isPlaylist = contentType.includes('application/vnd.apple.mpegurl') || 
                         contentType.includes('application/dash+xml') ||
                         contentType.includes('application/x-mpegurl');
