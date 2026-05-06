@@ -78,50 +78,37 @@ function getCacheTtl(url, request) {
   if (pathname.endsWith('.m3u8') || 
       contentType.includes('application/vnd.apple.mpegurl') ||
       contentType.includes('application/x-mpegurl')) {
-    return 300;
+    return 43200;
   }
   
   if (pathname.endsWith('.mpd') || 
       contentType.includes('application/dash+xml')) {
-    return 300;
+    return 43200;
   }
   
   if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) {
-    return 86400;
+    return 43200;
   }
   
   if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
-    return 604800;
+    return 43200;
   }
   
   if (pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
-    return 86400;
+    return 43200;
   }
   
   if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
-    return 21600;
+    return 43200;
   }
   
   if (pathname.includes('/media') || pathname.includes('/api/stream')) {
     const expireParam = url.searchParams.get('expire');
-    if (expireParam === 'never') return 2592000;
-    if (expireParam) {
-      const match = expireParam.match(/^(\d+)([hdm])$/);
-      if (match) {
-        const value = parseInt(match[1]);
-        const unit = match[2];
-        if (unit === 'h') return value * 3600;
-        if (unit === 'd') return value * 86400;
-        if (unit === 'm') return value * 60;
-      }
-    }
-    if (pathname.includes('m3u8') || pathname.includes('mpd')) {
-      return 300;
-    }
-    return 3600;
+    if (expireParam === 'never') return 43200;
+    return 43200;
   }
   
-  return 3600;
+  return 43200;
 }
 
 export default {
