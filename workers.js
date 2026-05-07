@@ -1,9 +1,5 @@
 const ORIGIN_URL = 'https://apiremake-production-441b.up.railway.app';
 
-const DEFAULT_LIMIT = 1500;
-const DEFAULT_WINDOW = 3600;
-const BLOCK_DURATION = 15 * 60;
-
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -48,64 +44,6 @@ const getClientIp = (request) => {
 
   return 'unknown';
 };
-
-const blockedIPs = new Map();
-const ipLimits = new Map();
-
-function checkLimit(ip) {
-  const now = Date.now();
-
-  if (blockedIPs.has(ip)) {
-    if (now - blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
-      return { blocked: true, reason: 'blocked' };
-    }
-    blockedIPs.delete(ip);
-  }
-
-  let entry = ipLimits.get(ip);
-  if (!entry || now > entry.reset * 1000) {
-    entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
-    ipLimits.set(ip, entry);
-  }
-
-  entry.count++;
-
-  if (entry.count > entry.limit) {
-    blockedIPs.set(ip, now);
-    return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
-  }
-
-  return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
-}
-
-function mirrorOrigin(ip, originLimit, originReset) {
-  if (!originLimit || !originReset) return;
-  const reset = parseInt(originReset);
-  const limit = parseInt(originLimit);
-  if (isNaN(limit) || isNaN(reset)) return;
-  if (reset <= Math.floor(Date.now() / 1000)) return;
-
-  const entry = ipLimits.get(ip);
-  if (entry) {
-    entry.limit = limit;
-    entry.reset = reset;
-    entry.mirrored = true;
-    if (entry.count > limit) {
-      blockedIPs.set(ip, Date.now());
-    }
-  }
-}
-
-let requestCount = 0;
-function cleanup() {
-  const now = Date.now();
-  for (const [ip, entry] of ipLimits) {
-    if (now > entry.reset * 1000 + 3600000) ipLimits.delete(ip);
-  }
-  for (const [ip, time] of blockedIPs) {
-    if (now - time > BLOCK_DURATION * 1000 + 60000) blockedIPs.delete(ip);
-  }
-}
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
@@ -211,18 +149,9 @@ export default {
       });
     }
 
-    if (++requestCount % 100 === 0) {
-      cleanup();
-    }
-
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-
-    const rateResult = checkLimit(clientIP);
-    if (rateResult.blocked) {
-      return new Response(null, { status: 444 });
-    }
 
     const cacheKey = new Request(
       rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
@@ -237,13 +166,6 @@ export default {
         const cachedHeaders = new Headers(cachedResponse.headers);
         cachedHeaders.set('CF-Cache-Status', 'HIT');
         cachedHeaders.set('X-Cache', 'HIT');
-        cachedHeaders.set('Access-Control-Allow-Origin', '*');
-        cachedHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        cachedHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-        cachedHeaders.set('ratelimit-limit', String(rateResult.limit));
-        cachedHeaders.set('ratelimit-remaining', String(Math.max(0, rateResult.limit - rateResult.count)));
-        cachedHeaders.set('ratelimit-reset', String(rateResult.reset));
-        cachedHeaders.set('Cache-Control', 'private, max-age=0, must-revalidate');
 
         return new Response(cachedResponse.body, {
           status: cachedResponse.status,
@@ -259,10 +181,6 @@ export default {
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
-
-    const originLimit = response.headers.get('ratelimit-limit');
-    const originReset = response.headers.get('ratelimit-reset');
-    mirrorOrigin(clientIP, originLimit, originReset);
 
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);
@@ -280,15 +198,12 @@ export default {
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
     resHeaders.set('Access-Control-Expose-Headers', '*');
-    resHeaders.set('ratelimit-limit', String(rateResult.limit));
-    resHeaders.set('ratelimit-remaining', String(Math.max(0, rateResult.limit - rateResult.count)));
-    resHeaders.set('ratelimit-reset', String(rateResult.reset));
 
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
     const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
 
     if (shouldCache) {
-      resHeaders.set('Cache-Control', `private, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+      resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
 
