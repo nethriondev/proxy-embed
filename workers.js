@@ -1,4 +1,5 @@
 const ORIGIN_URL = 'https://apiremake-production-441b.up.railway.app';
+
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -91,12 +92,10 @@ class RateLimiter {
     
     try {
       const config = await this.kv.get(key, { type: "json" });
-      
       if (config && config.reset > now) {
         return config;
       }
     } catch (error) {}
-    
     return null;
   }
 
@@ -104,13 +103,7 @@ class RateLimiter {
     const key = `ratelimit_config:${ip}`;
     const now = Math.floor(Date.now() / 1000);
     const windowSeconds = reset - now;
-    
-    const config = {
-      limit: limit,
-      reset: reset,
-      windowSeconds: windowSeconds
-    };
-    
+    const config = { limit: limit, reset: reset, windowSeconds: windowSeconds };
     await this.kv.put(key, JSON.stringify(config), { expirationTtl: windowSeconds + 300 });
     return config;
   }
@@ -136,7 +129,7 @@ class RateLimiter {
 
       if (requestData.count > limit) {
         await this.blockIP(ip);
-        return { blocked: true, count: requestData.count };
+        return { blocked: true, count: requestData.count, remaining: 0 };
       }
 
       await this.kv.put(key, JSON.stringify(requestData), { 
@@ -145,7 +138,7 @@ class RateLimiter {
 
       return { blocked: false, count: requestData.count, remaining: limit - requestData.count };
     } catch (error) {
-      return { blocked: false, count: 0, error: true, remaining: limit };
+      return { blocked: false, count: 0, remaining: limit, error: true };
     }
   }
 }
@@ -153,13 +146,8 @@ class RateLimiter {
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
   
-  if (hasRangeHeader) {
-    return 3600;
-  }
-  
-  if (responseContentType.includes('application/json')) {
-    return 0;
-  }
+  if (hasRangeHeader) return 3600;
+  if (responseContentType.includes('application/json')) return 0;
   
   if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
     return 0;
@@ -171,8 +159,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
     return 43200;
   }
   
-  if (pathname.endsWith('.mpd') || 
-      responseContentType.includes('application/dash+xml')) {
+  if (pathname.endsWith('.mpd') || responseContentType.includes('application/dash+xml')) {
     return 43200;
   }
   
@@ -192,8 +179,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
     return 43200;
   }
   
-  if (responseContentType.includes('text/html') || 
-      responseContentType.includes('application/xhtml+xml')) {
+  if (responseContentType.includes('text/html') || responseContentType.includes('application/xhtml+xml')) {
     return 3600;
   }
   
@@ -203,20 +189,6 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
 function isVideoSegment(url) {
   const pathname = url.pathname.toLowerCase();
   return pathname.match(/\.(ts|m4s)$/i);
-}
-
-function isFirstRequest(url, headers) {
-  const pathname = url.pathname.toLowerCase();
-  
-  if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) {
-    return true;
-  }
-  
-  if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i) && !headers.get('range')) {
-    return true;
-  }
-  
-  return false;
 }
 
 export default {
@@ -245,9 +217,7 @@ export default {
       return new Response(null, { status: 444 });
     }
     
-    const isManifestOrFirst = isFirstRequest(url, request.headers);
     const isSegment = isVideoSegment(url);
-    
     let limitConfig = await rateLimiter.getRateLimitConfig(clientIP);
     
     const newHeaders = new Headers(request.headers);
@@ -255,7 +225,18 @@ export default {
     newHeaders.set('x-real-ip', clientIP);
     newHeaders.set('cf-connecting-ip', clientIP);
     
-    async function tryFetch(rangeHeader) {
+    const cacheKey = new Request(
+      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+      request
+    );
+    
+    let cachedResponse = null;
+    if (request.method === 'GET') {
+      const cache = caches.default;
+      cachedResponse = await cache.match(cacheKey);
+    }
+    
+    if (!limitConfig) {
       const fetchUrl = new URL(request.url);
       fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
       fetchUrl.protocol = 'https:';
@@ -264,10 +245,7 @@ export default {
       const fetchOptions = {
         method: request.method,
         headers: newHeaders,
-        cf: {
-          polish: 'lossy',
-          mirage: true,
-        }
+        cf: { polish: 'lossy', mirage: true }
       };
       
       if (rangeHeader) {
@@ -287,16 +265,6 @@ export default {
           signal: controller.signal
         });
         clearTimeout(timeoutId);
-        return response;
-      } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
-      }
-    }
-    
-    if (!limitConfig) {
-      try {
-        const response = await tryFetch(rangeHeader);
         
         const originRateLimit = response.headers.get('ratelimit-limit');
         const originRateReset = response.headers.get('ratelimit-reset');
@@ -339,21 +307,16 @@ export default {
         resHeaders.set('ratelimit-remaining', String(rateResult.remaining));
         resHeaders.set('ratelimit-reset', String(reset));
         
-        const shouldCache = cacheTtl > 0 && 
-                           (response.status === 200 || response.status === 206);
+        const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
         
         if (shouldCache && request.method === 'GET') {
           const cache = caches.default;
-          const cacheKey = new Request(
-            rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-            request
-          );
-          const cachedResponse = new Response(responseToCache.body, {
+          const cachedRes = new Response(responseToCache.body, {
             status: responseToCache.status,
             statusText: responseToCache.statusText,
             headers: resHeaders
           });
-          ctx.waitUntil(cache.put(cacheKey, cachedResponse));
+          ctx.waitUntil(cache.put(cacheKey, cachedRes));
         }
         
         return new Response(response.body, {
@@ -363,6 +326,7 @@ export default {
         });
         
       } catch (error) {
+        clearTimeout(timeoutId);
         const now = Math.floor(Date.now() / 1000);
         limitConfig = await rateLimiter.setRateLimitConfig(clientIP, 1500, now + 3600);
         
@@ -373,14 +337,39 @@ export default {
         }
         
         try {
-          const response = await tryFetch(rangeHeader);
+          const retryFetchUrl = new URL(request.url);
+          retryFetchUrl.hostname = new URL(ORIGIN_URL).hostname;
+          retryFetchUrl.protocol = 'https:';
+          retryFetchUrl.port = '443';
           
-          const responseToCache = response.clone();
-          const resHeaders = new Headers(response.headers);
-          const contentType = response.headers.get('content-type') || '';
+          const retryOptions = {
+            method: request.method,
+            headers: newHeaders,
+            cf: { polish: 'lossy', mirage: true }
+          };
           
-          if (response.status === 206) {
-            const contentRange = response.headers.get('content-range');
+          if (rangeHeader) {
+            retryOptions.headers.set('Range', rangeHeader);
+          }
+          
+          if (request.method !== 'GET' && request.method !== 'HEAD') {
+            retryOptions.body = request.body;
+          }
+          
+          const retryController = new AbortController();
+          const retryTimeoutId = setTimeout(() => retryController.abort(), 30000);
+          
+          const retryResponse = await fetch(retryFetchUrl.toString(), {
+            ...retryOptions,
+            signal: retryController.signal
+          });
+          clearTimeout(retryTimeoutId);
+          
+          const resHeaders = new Headers(retryResponse.headers);
+          const contentType = retryResponse.headers.get('content-type') || '';
+          
+          if (retryResponse.status === 206) {
+            const contentRange = retryResponse.headers.get('content-range');
             if (contentRange) {
               resHeaders.set('content-range', contentRange);
             }
@@ -397,44 +386,16 @@ export default {
           resHeaders.set('ratelimit-remaining', String(rateResult.remaining));
           resHeaders.set('ratelimit-reset', String(now + 3600));
           
-          const shouldCache = cacheTtl > 0 && 
-                             (response.status === 200 || response.status === 206);
-          
-          if (shouldCache && request.method === 'GET') {
-            const cache = caches.default;
-            const cacheKey = new Request(
-              rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-              request
-            );
-            const cachedResponse = new Response(responseToCache.body, {
-              status: responseToCache.status,
-              statusText: responseToCache.statusText,
-              headers: resHeaders
-            });
-            ctx.waitUntil(cache.put(cacheKey, cachedResponse));
-          }
-          
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
+          return new Response(retryResponse.body, {
+            status: retryResponse.status,
+            statusText: retryResponse.statusText,
             headers: resHeaders
           });
           
-        } catch (fallbackError) {
+        } catch (retryError) {
           return new Response('Origin server error', { status: 502 });
         }
       }
-    }
-    
-    let cachedResponse = null;
-    const cacheKey = new Request(
-      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-      request
-    );
-    
-    if (request.method === 'GET') {
-      const cache = caches.default;
-      cachedResponse = await cache.match(cacheKey);
     }
     
     const rateResult = await rateLimiter.checkLimit(clientIP, limitConfig.limit, limitConfig.windowSeconds);
@@ -462,8 +423,34 @@ export default {
       });
     }
     
+    const fetchUrl = new URL(request.url);
+    fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
+    fetchUrl.protocol = 'https:';
+    fetchUrl.port = '443';
+    
+    const fetchOptions = {
+      method: request.method,
+      headers: newHeaders,
+      cf: { polish: 'lossy', mirage: true }
+    };
+    
+    if (rangeHeader) {
+      fetchOptions.headers.set('Range', rangeHeader);
+    }
+    
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      fetchOptions.body = request.body;
+    }
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    
     try {
-      const response = await tryFetch(rangeHeader);
+      const response = await fetch(fetchUrl.toString(), {
+        ...fetchOptions,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
       
       const responseToCache = response.clone();
       const resHeaders = new Headers(response.headers);
@@ -487,21 +474,16 @@ export default {
       resHeaders.set('ratelimit-remaining', String(rateResult.remaining));
       resHeaders.set('ratelimit-reset', String(limitConfig.reset));
       
-      const shouldCache = cacheTtl > 0 && 
-                         (response.status === 200 || response.status === 206);
+      const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
       
       if (shouldCache && request.method === 'GET' && !isSegment) {
         const cache = caches.default;
-        const cacheKey = new Request(
-          rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-          request
-        );
-        const cachedResponse = new Response(responseToCache.body, {
+        const cachedRes = new Response(responseToCache.body, {
           status: responseToCache.status,
           statusText: responseToCache.statusText,
           headers: resHeaders
         });
-        ctx.waitUntil(cache.put(cacheKey, cachedResponse));
+        ctx.waitUntil(cache.put(cacheKey, cachedRes));
       }
       
       return new Response(response.body, {
@@ -511,6 +493,7 @@ export default {
       });
       
     } catch (error) {
+      clearTimeout(timeoutId);
       return new Response('Origin server error', { status: 502 });
     }
   }
