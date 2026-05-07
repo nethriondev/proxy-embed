@@ -49,6 +49,59 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
+class RateLimiter {
+  constructor() {
+    this.blockedIPs = new Map();
+    this.ipLimits = new Map();
+  }
+
+  async check(ip) {
+    const now = Date.now();
+
+    if (this.blockedIPs.has(ip)) {
+      if (now - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
+        return { blocked: true, reason: 'blocked' };
+      }
+      this.blockedIPs.delete(ip);
+    }
+
+    let entry = this.ipLimits.get(ip);
+    if (!entry || now > entry.reset * 1000) {
+      entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
+      this.ipLimits.set(ip, entry);
+    }
+
+    entry.count++;
+
+    if (entry.count > entry.limit) {
+      this.blockedIPs.set(ip, now);
+      return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+    }
+
+    return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+  }
+
+  mirror(ip, originLimit, originReset) {
+    if (!originLimit || !originReset) return;
+    const reset = parseInt(originReset);
+    const limit = parseInt(originLimit);
+    if (isNaN(limit) || isNaN(reset)) return;
+    if (reset <= Math.floor(Date.now() / 1000)) return;
+
+    const entry = this.ipLimits.get(ip);
+    if (entry) {
+      entry.limit = limit;
+      entry.reset = reset;
+      entry.mirrored = true;
+      if (entry.count > limit) {
+        this.blockedIPs.set(ip, Date.now());
+      }
+    }
+  }
+}
+
+const localLimiter = new RateLimiter();
+
 export class RateLimiterDO {
   constructor(state, env) {
     this.state = state;
@@ -244,14 +297,22 @@ export default {
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
 
-    const doId = env.RATE_LIMITER_DO.idFromName('global');
-    const doStub = env.RATE_LIMITER_DO.get(doId);
+    let rateResult;
+    let useDO = false;
+    let doStub;
 
-    const checkRes = await doStub.fetch('https://do/', {
-      method: 'POST',
-      body: JSON.stringify({ ip: clientIP, action: 'check' })
-    });
-    const rateResult = await checkRes.json();
+    try {
+      const doId = env.RATE_LIMITER_DO.idFromName('global');
+      doStub = env.RATE_LIMITER_DO.get(doId);
+      const res = await doStub.fetch('https://do/', {
+        method: 'POST',
+        body: JSON.stringify({ ip: clientIP, action: 'check' })
+      });
+      rateResult = await res.json();
+      useDO = true;
+    } catch (e) {
+      rateResult = await localLimiter.check(clientIP);
+    }
 
     if (rateResult.blocked) {
       return new Response(null, { status: 444 });
@@ -297,12 +358,16 @@ export default {
     const originReset = response.headers.get('ratelimit-reset');
 
     if (originLimit && originReset) {
-      ctx.waitUntil(
-        doStub.fetch('https://do/', {
-          method: 'POST',
-          body: JSON.stringify({ ip: clientIP, action: 'mirror', limit: originLimit, reset: originReset })
-        })
-      );
+      if (useDO) {
+        ctx.waitUntil(
+          doStub.fetch('https://do/', {
+            method: 'POST',
+            body: JSON.stringify({ ip: clientIP, action: 'mirror', limit: originLimit, reset: originReset })
+          })
+        );
+      } else {
+        localLimiter.mirror(clientIP, originLimit, originReset);
+      }
     }
 
     const responseToCache = response.clone();
