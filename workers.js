@@ -49,124 +49,61 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-class RateLimiter {
-  constructor() {
-    this.blockedIPs = new Map();
-    this.ipLimits = new Map();
+const blockedIPs = new Map();
+const ipLimits = new Map();
+
+function checkLimit(ip) {
+  const now = Date.now();
+
+  if (blockedIPs.has(ip)) {
+    if (now - blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
+      return { blocked: true, reason: 'blocked' };
+    }
+    blockedIPs.delete(ip);
   }
 
-  async check(ip) {
-    const now = Date.now();
-
-    if (this.blockedIPs.has(ip)) {
-      if (now - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
-        return { blocked: true, reason: 'blocked' };
-      }
-      this.blockedIPs.delete(ip);
-    }
-
-    let entry = this.ipLimits.get(ip);
-    if (!entry || now > entry.reset * 1000) {
-      entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
-      this.ipLimits.set(ip, entry);
-    }
-
-    entry.count++;
-
-    if (entry.count > entry.limit) {
-      this.blockedIPs.set(ip, now);
-      return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
-    }
-
-    return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+  let entry = ipLimits.get(ip);
+  if (!entry || now > entry.reset * 1000) {
+    entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
+    ipLimits.set(ip, entry);
   }
 
-  mirror(ip, originLimit, originReset) {
-    if (!originLimit || !originReset) return;
-    const reset = parseInt(originReset);
-    const limit = parseInt(originLimit);
-    if (isNaN(limit) || isNaN(reset)) return;
-    if (reset <= Math.floor(Date.now() / 1000)) return;
+  entry.count++;
 
-    const entry = this.ipLimits.get(ip);
-    if (entry) {
-      entry.limit = limit;
-      entry.reset = reset;
-      entry.mirrored = true;
-      if (entry.count > limit) {
-        this.blockedIPs.set(ip, Date.now());
-      }
+  if (entry.count > entry.limit) {
+    blockedIPs.set(ip, now);
+    return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+  }
+
+  return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+}
+
+function mirrorOrigin(ip, originLimit, originReset) {
+  if (!originLimit || !originReset) return;
+  const reset = parseInt(originReset);
+  const limit = parseInt(originLimit);
+  if (isNaN(limit) || isNaN(reset)) return;
+  if (reset <= Math.floor(Date.now() / 1000)) return;
+
+  const entry = ipLimits.get(ip);
+  if (entry) {
+    entry.limit = limit;
+    entry.reset = reset;
+    entry.mirrored = true;
+    if (entry.count > limit) {
+      blockedIPs.set(ip, Date.now());
     }
   }
 }
 
-const localLimiter = new RateLimiter();
-
-export class RateLimiterDO {
-  constructor(state, env) {
-    this.state = state;
-    this.blockedIPs = new Map();
-    this.ipLimits = new Map();
+let requestCount = 0;
+function cleanup() {
+  const now = Date.now();
+  for (const [ip, entry] of ipLimits) {
+    if (now > entry.reset * 1000 + 3600000) ipLimits.delete(ip);
   }
-
-  async fetch(request) {
-    const { ip, action, limit, reset } = await request.json();
-    if (!ip || !action) {
-      return new Response(JSON.stringify({ error: 'Missing ip or action' }), { status: 400 });
-    }
-
-    const now = Date.now();
-
-    if (action === 'check') {
-      if (this.blockedIPs.has(ip)) {
-        if (now - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
-          return new Response(JSON.stringify({ blocked: true, reason: 'blocked' }));
-        }
-        this.blockedIPs.delete(ip);
-      }
-
-      let entry = this.ipLimits.get(ip);
-      if (!entry || now > entry.reset * 1000) {
-        entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
-        this.ipLimits.set(ip, entry);
-      }
-
-      entry.count++;
-
-      if (entry.count > entry.limit) {
-        this.blockedIPs.set(ip, now);
-        return new Response(JSON.stringify({ blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored }));
-      }
-
-      return new Response(JSON.stringify({ blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored }));
-    }
-
-    if (action === 'mirror') {
-      if (!limit || !reset) {
-        return new Response(JSON.stringify({ ok: false }));
-      }
-      const parsedLimit = parseInt(limit);
-      const parsedReset = parseInt(reset);
-      if (isNaN(parsedLimit) || isNaN(parsedReset)) {
-        return new Response(JSON.stringify({ ok: false }));
-      }
-      if (parsedReset <= Math.floor(now / 1000)) {
-        return new Response(JSON.stringify({ ok: false }));
-      }
-
-      const entry = this.ipLimits.get(ip);
-      if (entry) {
-        entry.limit = parsedLimit;
-        entry.reset = parsedReset;
-        entry.mirrored = true;
-        if (entry.count > parsedLimit) {
-          this.blockedIPs.set(ip, now);
-        }
-      }
-      return new Response(JSON.stringify({ ok: true }));
-    }
-
-    return new Response(JSON.stringify({ error: 'Unknown action' }), { status: 400 });
+  for (const [ip, time] of blockedIPs) {
+    if (now - time > BLOCK_DURATION * 1000 + 60000) blockedIPs.delete(ip);
   }
 }
 
@@ -218,25 +155,6 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
   }
   
   return 43200;
-}
-
-function isVideoSegment(url) {
-  const pathname = url.pathname.toLowerCase();
-  return pathname.match(/\.(ts|m4s)$/i);
-}
-
-function isFirstRequest(url, headers) {
-  const pathname = url.pathname.toLowerCase();
-  
-  if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) {
-    return true;
-  }
-  
-  if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i) && !headers.get('range')) {
-    return true;
-  }
-  
-  return false;
 }
 
 async function proxyFetch(url, request, clientIP, rangeHeader) {
@@ -293,27 +211,15 @@ export default {
       });
     }
 
+    if (++requestCount % 100 === 0) {
+      cleanup();
+    }
+
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
 
-    let rateResult;
-    let useDO = false;
-    let doStub;
-
-    try {
-      const doId = env.RATE_LIMITER_DO.idFromName('global');
-      doStub = env.RATE_LIMITER_DO.get(doId);
-      const res = await doStub.fetch('https://do/', {
-        method: 'POST',
-        body: JSON.stringify({ ip: clientIP, action: 'check' })
-      });
-      rateResult = await res.json();
-      useDO = true;
-    } catch (e) {
-      rateResult = await localLimiter.check(clientIP);
-    }
-
+    const rateResult = checkLimit(clientIP);
     if (rateResult.blocked) {
       return new Response(null, { status: 444 });
     }
@@ -356,19 +262,7 @@ export default {
 
     const originLimit = response.headers.get('ratelimit-limit');
     const originReset = response.headers.get('ratelimit-reset');
-
-    if (originLimit && originReset) {
-      if (useDO) {
-        ctx.waitUntil(
-          doStub.fetch('https://do/', {
-            method: 'POST',
-            body: JSON.stringify({ ip: clientIP, action: 'mirror', limit: originLimit, reset: originReset })
-          })
-        );
-      } else {
-        localLimiter.mirror(clientIP, originLimit, originReset);
-      }
-    }
+    mirrorOrigin(clientIP, originLimit, originReset);
 
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);

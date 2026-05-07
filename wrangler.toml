@@ -2,14 +2,6 @@ name = "proxy-embed"
 compatibility_date = "2024-12-01"
 main = "workers.js"
 
-[[durable_objects.bindings]]
-name = "RATE_LIMITER_DO"
-class_name = "RateLimiterDO"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["RateLimiterDO"]
-
 [observability]
 enabled = true
 head_sampling_rate = 1
