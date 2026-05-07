@@ -321,7 +321,7 @@ export default {
     }
     
     try {
-      response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+      response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
