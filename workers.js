@@ -50,6 +50,7 @@ class RateLimiter {
     this.kv = env.RATE_LIMIT_KV;
     this.blockDuration = 15 * 60;
     this.blockedIPs = new Map();
+    this.memoryStore = new Map();
   }
 
   async isBlocked(ip) {
@@ -60,6 +61,8 @@ class RateLimiter {
       }
       this.blockedIPs.delete(ip);
     }
+
+    if (!this.kv) return false;
 
     try {
       const blockedData = await this.kv.get(`blocked:${ip}`);
@@ -81,12 +84,22 @@ class RateLimiter {
   async blockIP(ip) {
     const now = Date.now();
     this.blockedIPs.set(ip, now);
-    await this.kv.put(`blocked:${ip}`, JSON.stringify({
-      blockedAt: now
-    }), { expirationTtl: this.blockDuration });
+    if (this.kv) {
+      await this.kv.put(`blocked:${ip}`, JSON.stringify({ blockedAt: now }), { expirationTtl: this.blockDuration });
+    }
   }
 
   async getRateLimitConfig(ip) {
+    if (!this.kv) {
+      const now = Math.floor(Date.now() / 1000);
+      let config = this.memoryStore.get(ip);
+      if (!config || config.reset < now) {
+        config = { limit: 1500, reset: now + 3600, windowSeconds: 3600 };
+        this.memoryStore.set(ip, config);
+      }
+      return config;
+    }
+
     const key = `ratelimit_config:${ip}`;
     const now = Math.floor(Date.now() / 1000);
     
@@ -96,14 +109,21 @@ class RateLimiter {
         return config;
       }
     } catch (error) {}
+    
     return null;
   }
 
   async setRateLimitConfig(ip, limit, reset) {
-    const key = `ratelimit_config:${ip}`;
     const now = Math.floor(Date.now() / 1000);
     const windowSeconds = reset - now;
     const config = { limit: limit, reset: reset, windowSeconds: windowSeconds };
+    
+    if (!this.kv) {
+      this.memoryStore.set(ip, config);
+      return config;
+    }
+    
+    const key = `ratelimit_config:${ip}`;
     await this.kv.put(key, JSON.stringify(config), { expirationTtl: windowSeconds + 300 });
     return config;
   }
@@ -111,9 +131,27 @@ class RateLimiter {
   async checkLimit(ip, limit, windowSeconds) {
     try {
       const now = Date.now();
+      const windowMs = windowSeconds * 1000;
+      
+      if (!this.kv) {
+        let data = this.memoryStore.get(`ratelimit:${ip}`);
+        if (!data || now - data.windowStart > windowMs) {
+          data = { windowStart: now, count: 1 };
+        } else {
+          data.count++;
+        }
+        
+        if (data.count > limit) {
+          await this.blockIP(ip);
+          return { blocked: true, count: data.count, remaining: 0 };
+        }
+        
+        this.memoryStore.set(`ratelimit:${ip}`, data);
+        return { blocked: false, count: data.count, remaining: limit - data.count };
+      }
+      
       const key = `ratelimit:${ip}`;
       const data = await this.kv.get(key);
-      const windowMs = windowSeconds * 1000;
       
       let requestData;
       if (data) {
@@ -132,9 +170,7 @@ class RateLimiter {
         return { blocked: true, count: requestData.count, remaining: 0 };
       }
 
-      await this.kv.put(key, JSON.stringify(requestData), { 
-        expirationTtl: Math.ceil(windowMs / 1000) 
-      });
+      await this.kv.put(key, JSON.stringify(requestData), { expirationTtl: Math.ceil(windowMs / 1000) });
 
       return { blocked: false, count: requestData.count, remaining: limit - requestData.count };
     } catch (error) {
@@ -209,10 +245,7 @@ export default {
     const rangeHeader = request.headers.get('range');
     const rateLimiter = new RateLimiter(env);
     
-    const isBlockedPromise = rateLimiter.isBlocked(clientIP);
-    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(false), 100));
-    const isBlocked = await Promise.race([isBlockedPromise, timeoutPromise]);
-    
+    const isBlocked = await rateLimiter.isBlocked(clientIP);
     if (isBlocked) {
       return new Response(null, { status: 444 });
     }
@@ -336,6 +369,22 @@ export default {
           return new Response(null, { status: 444 });
         }
         
+        if (cachedResponse && !isSegment) {
+          const cachedHeaders = new Headers(cachedResponse.headers);
+          cachedHeaders.set('CF-Cache-Status', 'HIT');
+          cachedHeaders.set('X-Cache', 'HIT');
+          cachedHeaders.set('Access-Control-Allow-Origin', '*');
+          cachedHeaders.set('ratelimit-limit', String(1500));
+          cachedHeaders.set('ratelimit-remaining', String(rateResult.remaining));
+          cachedHeaders.set('ratelimit-reset', String(now + 3600));
+          
+          return new Response(cachedResponse.body, {
+            status: cachedResponse.status,
+            statusText: cachedResponse.statusText,
+            headers: cachedHeaders
+          });
+        }
+        
         try {
           const retryFetchUrl = new URL(request.url);
           retryFetchUrl.hostname = new URL(ORIGIN_URL).hostname;
@@ -386,6 +435,18 @@ export default {
           resHeaders.set('ratelimit-remaining', String(rateResult.remaining));
           resHeaders.set('ratelimit-reset', String(now + 3600));
           
+          const shouldCache = cacheTtl > 0 && (retryResponse.status === 200 || retryResponse.status === 206);
+          
+          if (shouldCache && request.method === 'GET') {
+            const cache = caches.default;
+            const cachedRes = new Response(retryResponse.body, {
+              status: retryResponse.status,
+              statusText: retryResponse.statusText,
+              headers: resHeaders
+            });
+            ctx.waitUntil(cache.put(cacheKey, cachedRes));
+          }
+          
           return new Response(retryResponse.body, {
             status: retryResponse.status,
             statusText: retryResponse.statusText,
@@ -393,6 +454,13 @@ export default {
           });
           
         } catch (retryError) {
+          if (cachedResponse && !isSegment) {
+            return new Response(cachedResponse.body, {
+              status: cachedResponse.status,
+              statusText: cachedResponse.statusText,
+              headers: cachedResponse.headers
+            });
+          }
           return new Response('Origin server error', { status: 502 });
         }
       }
@@ -494,6 +562,13 @@ export default {
       
     } catch (error) {
       clearTimeout(timeoutId);
+      if (cachedResponse && !isSegment) {
+        return new Response(cachedResponse.body, {
+          status: cachedResponse.status,
+          statusText: cachedResponse.statusText,
+          headers: cachedResponse.headers
+        });
+      }
       return new Response('Origin server error', { status: 502 });
     }
   }
