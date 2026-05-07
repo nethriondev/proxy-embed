@@ -284,6 +284,7 @@ export default {
         cachedHeaders.set('ratelimit-limit', String(rateResult.limit));
         cachedHeaders.set('ratelimit-remaining', String(Math.max(0, rateResult.limit - rateResult.count)));
         cachedHeaders.set('ratelimit-reset', String(rateResult.reset));
+        cachedHeaders.set('Cache-Control', 'private, max-age=0, must-revalidate');
 
         return new Response(cachedResponse.body, {
           status: cachedResponse.status,
@@ -333,7 +334,7 @@ export default {
     const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
 
     if (shouldCache) {
-      resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+      resHeaders.set('Cache-Control', `private, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
 
