@@ -49,7 +49,7 @@ function getUrlCacheTtl(url, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
 
   if (hasRangeHeader) return 3600;
-  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) return 0;
+  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) return;
   if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) return 43200;
   if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) return 43200;
   if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/i)) return 43200;
@@ -117,10 +117,16 @@ async function proxyFetch(url, request, clientIP, rangeHeader) {
   fetchUrl.protocol = 'https:';
   fetchUrl.port = '443';
 
+  const cfSettings = { polish: 'lossy', mirage: true };
+  const urlCacheTtl = getUrlCacheTtl(url, !!rangeHeader);
+  if (urlCacheTtl !== undefined) {
+    cfSettings.cacheTtl = urlCacheTtl;
+  }
+
   const fetchOptions = {
     method: request.method,
     headers: newHeaders,
-    cf: { polish: 'lossy', mirage: true, cacheTtl: getUrlCacheTtl(url, !!rangeHeader) }
+    cf: cfSettings
   };
 
   if (rangeHeader) {
