@@ -67,6 +67,11 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
     return 0;
   }
   
+  if (responseContentType.includes('text/html') || 
+      responseContentType.includes('application/xhtml+xml')) {
+    return 3600;
+  }
+  
   if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
     return 0;
   }
@@ -96,11 +101,6 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
   
   if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
     return 43200;
-  }
-  
-  if (responseContentType.includes('text/html') || 
-      responseContentType.includes('application/xhtml+xml')) {
-    return 3600;
   }
   
   return 43200;
