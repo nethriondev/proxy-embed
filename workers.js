@@ -207,7 +207,8 @@ export default {
     );
     let response = null;
     
-    if (request.method === 'GET' && !rangeHeader) {
+    // Check cache for ALL requests (including range/206)
+    if (request.method === 'GET') {
       const cache = caches.default;
       const cachedResponse = await cache.match(cacheKey);
       
@@ -259,7 +260,8 @@ export default {
     const resHeaders = new Headers(response.headers);
     const contentType = response.headers.get('content-type') || '';
     
-    if (rangeHeader && response.status === 206) {
+    // Handle 206 responses properly
+    if (response.status === 206) {
       const contentRange = response.headers.get('content-range');
       if (contentRange) {
         resHeaders.set('content-range', contentRange);
@@ -293,8 +295,10 @@ export default {
       resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - rateResult.count)));
       resHeaders.set('ratelimit-reset', originRateReset);
     }
-    
-    const shouldCache = cacheTtl > 0 && response.status === 200 && !rangeHeader;
+   
+    const shouldCache = cacheTtl > 0 && 
+                       (response.status === 200 || response.status === 206) && 
+                       !isStreamingRequest;
     
     if (shouldCache) {
       const isPlaylist = contentType.includes('application/vnd.apple.mpegurl') || 
