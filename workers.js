@@ -48,7 +48,7 @@ class RateLimiter {
     this.kv = env.RATE_LIMIT_KV;
     this.blockDuration = 15 * 60;
     this.blockedIPs = new Map();
-    this.requestTimestamps = new Map();
+    this.sessionActive = new Map();
   }
 
   async isBlocked(ip) {
@@ -70,6 +70,7 @@ class RateLimiter {
         } else {
           await this.kv.delete(`blocked:${ip}`);
           await this.kv.delete(`ratelimit:${ip}`);
+          await this.kv.delete(`ratelimit_config:${ip}`);
         }
       }
     } catch (error) {}
@@ -82,6 +83,36 @@ class RateLimiter {
     await this.kv.put(`blocked:${ip}`, JSON.stringify({
       blockedAt: now
     }), { expirationTtl: this.blockDuration });
+  }
+
+  async getRateLimitConfig(ip) {
+    const key = `ratelimit_config:${ip}`;
+    const now = Math.floor(Date.now() / 1000);
+    
+    try {
+      const config = await this.kv.get(key, { type: "json" });
+      
+      if (config && config.reset > now) {
+        return config;
+      }
+    } catch (error) {}
+    
+    return null;
+  }
+
+  async setRateLimitConfig(ip, limit, reset) {
+    const key = `ratelimit_config:${ip}`;
+    const now = Math.floor(Date.now() / 1000);
+    const windowSeconds = reset - now;
+    
+    const config = {
+      limit: limit,
+      reset: reset,
+      windowSeconds: windowSeconds
+    };
+    
+    await this.kv.put(key, JSON.stringify(config), { expirationTtl: windowSeconds + 300 });
+    return config;
   }
 
   async checkLimit(ip, limit, windowSeconds) {
@@ -118,35 +149,19 @@ class RateLimiter {
     }
   }
 
-  async checkLimitNonBlocking(ip, limit, windowSeconds) {
-    try {
-      const now = Date.now();
-      const windowMs = windowSeconds * 1000;
-      
-      let timestamps = this.requestTimestamps.get(ip) || [];
-      timestamps = timestamps.filter(t => now - t < windowMs);
-      
-      if (timestamps.length >= limit) {
-        return { blocked: true, count: timestamps.length };
-      }
-      
-      timestamps.push(now);
-      this.requestTimestamps.set(ip, timestamps);
-      
-      const key = `ratelimit:${ip}`;
-      const requestData = { 
-        windowStart: timestamps[0] || now, 
-        count: timestamps.length 
-      };
-      
-      this.kv.put(key, JSON.stringify(requestData), { 
-        expirationTtl: Math.ceil(windowMs / 1000) 
-      }).catch(e => console.error(e));
-      
-      return { blocked: false, count: timestamps.length, remaining: limit - timestamps.length };
-    } catch (error) {
-      return { blocked: false, count: 0, error: true };
+  async checkSessionLimit(ip, url, limit, windowSeconds) {
+    const sessionKey = `${ip}:${url.pathname}`;
+    
+    if (this.sessionActive.has(sessionKey)) {
+      return { blocked: false, sessionActive: true };
     }
+    
+    this.sessionActive.set(sessionKey, Date.now());
+    setTimeout(() => {
+      this.sessionActive.delete(sessionKey);
+    }, windowSeconds * 1000);
+    
+    return await this.checkLimit(ip, limit, windowSeconds);
   }
 }
 
@@ -200,18 +215,19 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
   return 43200;
 }
 
-function isCDNOrVideoRequest(url, headers) {
+function isVideoSegment(url) {
   const pathname = url.pathname.toLowerCase();
-  
-  if (pathname.match(/\.(mp4|webm|avi|mov|mkv|ts|m4s)$/i)) {
-    return true;
-  }
+  return pathname.match(/\.(ts|m4s|mp4|webm|avi|mov|mkv)$/i);
+}
+
+function isFirstRequest(url, headers) {
+  const pathname = url.pathname.toLowerCase();
   
   if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) {
     return true;
   }
   
-  if (headers.get('range')) {
+  if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i) && !headers.get('range')) {
     return true;
   }
   
@@ -234,7 +250,6 @@ export default {
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-    const isCDNVideo = isCDNOrVideoRequest(url, request.headers);
     const rateLimiter = new RateLimiter(env);
     
     const isBlockedPromise = rateLimiter.isBlocked(clientIP);
@@ -245,41 +260,250 @@ export default {
       return new Response(null, { status: 444 });
     }
     
+    const isManifestOrFirst = isFirstRequest(url, request.headers);
+    const isSegment = isVideoSegment(url);
+    
+    let limitConfig = await rateLimiter.getRateLimitConfig(clientIP);
+    
+    if (!limitConfig && isManifestOrFirst) {
+      const newHeaders = new Headers(request.headers);
+      newHeaders.set('x-forwarded-for', clientIP);
+      newHeaders.set('x-real-ip', clientIP);
+      newHeaders.set('cf-connecting-ip', clientIP);
+      
+      async function tryFetch(hostname, rangeHeader) {
+        const fetchUrl = new URL(request.url);
+        fetchUrl.hostname = hostname;
+        fetchUrl.protocol = 'https:';
+        fetchUrl.port = '443';
+        
+        const fetchOptions = {
+          method: request.method,
+          headers: newHeaders,
+          cf: {
+            polish: 'lossy',
+            mirage: true,
+          }
+        };
+        
+        if (rangeHeader) {
+          fetchOptions.headers.set('Range', rangeHeader);
+        }
+        
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          fetchOptions.body = request.body;
+        }
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
+        try {
+          const response = await fetch(fetchUrl.toString(), {
+            ...fetchOptions,
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
+        }
+      }
+      
+      try {
+        const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+        
+        const originRateLimit = response.headers.get('ratelimit-limit');
+        const originRateReset = response.headers.get('ratelimit-reset');
+        
+        let limit = 1500;
+        let reset = Math.floor(Date.now() / 1000) + 3600;
+        
+        if (originRateLimit && originRateReset) {
+          limit = parseInt(originRateLimit);
+          reset = parseInt(originRateReset);
+        }
+        
+        limitConfig = await rateLimiter.setRateLimitConfig(clientIP, limit, reset);
+        
+        const rateResult = await rateLimiter.checkLimit(clientIP, limit, limitConfig.windowSeconds);
+        
+        if (rateResult.blocked) {
+          return new Response(null, { status: 444 });
+        }
+        
+        const responseToCache = response.clone();
+        const resHeaders = new Headers(response.headers);
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (response.status === 206) {
+          const contentRange = response.headers.get('content-range');
+          if (contentRange) {
+            resHeaders.set('content-range', contentRange);
+          }
+          resHeaders.set('accept-ranges', 'bytes');
+        }
+        
+        const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
+        
+        resHeaders.set('Access-Control-Allow-Origin', '*');
+        resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+        resHeaders.set('Access-Control-Expose-Headers', '*');
+        resHeaders.set('ratelimit-limit', String(limit));
+        resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - rateResult.count)));
+        resHeaders.set('ratelimit-reset', String(reset));
+        
+        const shouldCache = cacheTtl > 0 && 
+                           (response.status === 200 || response.status === 206);
+        
+        if (shouldCache) {
+          resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+          resHeaders.set('CF-Cache-Status', 'MISS');
+          resHeaders.set('X-Cache', 'MISS');
+          
+          if (request.method === 'GET') {
+            ctx.waitUntil(
+              (async () => {
+                const cache = caches.default;
+                const cacheKey = new Request(
+                  rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+                  request
+                );
+                const cachedResponse = new Response(responseToCache.body, {
+                  status: responseToCache.status,
+                  statusText: responseToCache.statusText,
+                  headers: resHeaders
+                });
+                await cache.put(cacheKey, cachedResponse);
+              })()
+            );
+          }
+        }
+        
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: resHeaders
+        });
+        
+      } catch (error) {
+        return new Response('Origin server error', { status: 502 });
+      }
+    }
+    
+    if (isSegment && limitConfig) {
+      const newHeaders = new Headers(request.headers);
+      newHeaders.set('x-forwarded-for', clientIP);
+      newHeaders.set('x-real-ip', clientIP);
+      newHeaders.set('cf-connecting-ip', clientIP);
+      
+      async function tryFetch(hostname, rangeHeader) {
+        const fetchUrl = new URL(request.url);
+        fetchUrl.hostname = hostname;
+        fetchUrl.protocol = 'https:';
+        fetchUrl.port = '443';
+        
+        const fetchOptions = {
+          method: request.method,
+          headers: newHeaders,
+          cf: {
+            polish: 'lossy',
+            mirage: true,
+          }
+        };
+        
+        if (rangeHeader) {
+          fetchOptions.headers.set('Range', rangeHeader);
+        }
+        
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          fetchOptions.body = request.body;
+        }
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
+        try {
+          const response = await fetch(fetchUrl.toString(), {
+            ...fetchOptions,
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
+        }
+      }
+      
+      try {
+        const response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
+        
+        const responseToCache = response.clone();
+        const resHeaders = new Headers(response.headers);
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (response.status === 206) {
+          const contentRange = response.headers.get('content-range');
+          if (contentRange) {
+            resHeaders.set('content-range', contentRange);
+          }
+          resHeaders.set('accept-ranges', 'bytes');
+        }
+        
+        const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
+        
+        resHeaders.set('Access-Control-Allow-Origin', '*');
+        resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+        resHeaders.set('Access-Control-Expose-Headers', '*');
+        resHeaders.set('ratelimit-limit', String(limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(limitConfig.remaining || limitConfig.limit));
+        resHeaders.set('ratelimit-reset', String(limitConfig.reset));
+        
+        const shouldCache = cacheTtl > 0 && 
+                           (response.status === 200 || response.status === 206);
+        
+        if (shouldCache) {
+          resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+          resHeaders.set('CF-Cache-Status', 'MISS');
+          resHeaders.set('X-Cache', 'MISS');
+          
+          if (request.method === 'GET') {
+            ctx.waitUntil(
+              (async () => {
+                const cache = caches.default;
+                const cacheKey = new Request(
+                  rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+                  request
+                );
+                const cachedResponse = new Response(responseToCache.body, {
+                  status: responseToCache.status,
+                  statusText: responseToCache.statusText,
+                  headers: resHeaders
+                });
+                await cache.put(cacheKey, cachedResponse);
+              })()
+            );
+          }
+        }
+        
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: resHeaders
+        });
+        
+      } catch (error) {
+        return new Response('Origin server error', { status: 502 });
+      }
+    }
+    
     const newHeaders = new Headers(request.headers);
     newHeaders.set('x-forwarded-for', clientIP);
     newHeaders.set('x-real-ip', clientIP);
     newHeaders.set('cf-connecting-ip', clientIP);
-    
-    const acceptHeader = request.headers.get('accept') || '';
-    const isStreamingRequest = acceptHeader.includes('text/event-stream') || 
-                              acceptHeader.includes('application/stream+json') ||
-                              request.headers.get('x-stream') === 'true';
-    
-    const cacheKey = new Request(
-      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-      request
-    );
-    let response = null;
-    
-    if (request.method === 'GET') {
-      const cache = caches.default;
-      const cachedResponse = await cache.match(cacheKey);
-      
-      if (cachedResponse) {
-        const cachedHeaders = new Headers(cachedResponse.headers);
-        cachedHeaders.set('CF-Cache-Status', 'HIT');
-        cachedHeaders.set('X-Cache', 'HIT');
-        cachedHeaders.set('Access-Control-Allow-Origin', '*');
-        cachedHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        cachedHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-        
-        return new Response(cachedResponse.body, {
-          status: cachedResponse.status,
-          statusText: cachedResponse.statusText,
-          headers: cachedHeaders
-        });
-      }
-    }
     
     async function tryFetch(hostname, rangeHeader) {
       const fetchUrl = new URL(request.url);
@@ -321,112 +545,68 @@ export default {
     }
     
     try {
-      response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
+      const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+      
+      const responseToCache = response.clone();
+      const resHeaders = new Headers(response.headers);
+      const contentType = response.headers.get('content-type') || '';
+      
+      if (response.status === 206) {
+        const contentRange = response.headers.get('content-range');
+        if (contentRange) {
+          resHeaders.set('content-range', contentRange);
+        }
+        resHeaders.set('accept-ranges', 'bytes');
+      }
+      
+      const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
+      
+      resHeaders.set('Access-Control-Allow-Origin', '*');
+      resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+      resHeaders.set('Access-Control-Expose-Headers', '*');
+      
+      if (limitConfig) {
+        resHeaders.set('ratelimit-limit', String(limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(limitConfig.remaining || limitConfig.limit));
+        resHeaders.set('ratelimit-reset', String(limitConfig.reset));
+      }
+      
+      const shouldCache = cacheTtl > 0 && 
+                         (response.status === 200 || response.status === 206);
+      
+      if (shouldCache) {
+        resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+        resHeaders.set('CF-Cache-Status', 'MISS');
+        resHeaders.set('X-Cache', 'MISS');
+        
+        if (request.method === 'GET') {
+          ctx.waitUntil(
+            (async () => {
+              const cache = caches.default;
+              const cacheKey = new Request(
+                rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+                request
+              );
+              const cachedResponse = new Response(responseToCache.body, {
+                status: responseToCache.status,
+                statusText: responseToCache.statusText,
+                headers: resHeaders
+              });
+              await cache.put(cacheKey, cachedResponse);
+            })()
+          );
+        }
+      }
+      
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: resHeaders
+      });
+      
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
-    
-    const responseToCache = response.clone();
-    const resHeaders = new Headers(response.headers);
-    const contentType = response.headers.get('content-type') || '';
-    
-    if (response.status === 206) {
-      const contentRange = response.headers.get('content-range');
-      if (contentRange) {
-        resHeaders.set('content-range', contentRange);
-      }
-      resHeaders.set('accept-ranges', 'bytes');
-    }
-    
-    const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-    
-    resHeaders.set('Access-Control-Allow-Origin', '*');
-    resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-    resHeaders.set('Access-Control-Expose-Headers', '*');
-    
-    const originRateLimit = response.headers.get('ratelimit-limit');
-    const originRateReset = response.headers.get('ratelimit-reset');
-    
-    if (originRateLimit && originRateReset) {
-      const limit = parseInt(originRateLimit);
-      const resetTime = parseInt(originRateReset);
-      const now = Math.floor(Date.now() / 1000);
-      const windowSeconds = Math.max(1, resetTime - now);
-      
-      let rateResult;
-      
-      if (isCDNVideo) {
-        rateResult = await rateLimiter.checkLimitNonBlocking(clientIP, limit, windowSeconds);
-      } else {
-        rateResult = await rateLimiter.checkLimit(clientIP, limit, windowSeconds);
-      }
-      
-      if (rateResult.blocked) {
-        return new Response(null, { status: 444 });
-      }
-      
-      resHeaders.set('ratelimit-limit', originRateLimit);
-      resHeaders.set('ratelimit-remaining', String(rateResult.remaining || Math.max(0, limit - rateResult.count)));
-      resHeaders.set('ratelimit-reset', originRateReset);
-    }
-   
-    const shouldCache = cacheTtl > 0 && 
-                       (response.status === 200 || response.status === 206) && 
-                       !isStreamingRequest;
-    
-    if (shouldCache) {
-      const isPlaylist = contentType.includes('application/vnd.apple.mpegurl') || 
-                        contentType.includes('application/dash+xml') ||
-                        contentType.includes('application/x-mpegurl');
-      
-      if (isPlaylist) {
-        resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
-        resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
-        resHeaders.set('Cloudflare-CDN-Cache-Control', `public, max-age=${cacheTtl}`);
-      } else {
-        resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
-        resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
-        resHeaders.set('Cloudflare-CDN-Cache-Control', `public, max-age=${cacheTtl}`);
-      }
-      
-      resHeaders.set('CF-Cache-Status', 'MISS');
-      resHeaders.set('X-Cache', 'MISS');
-      
-      if (url.pathname.match(/\.(mp4|webm|ts|m4s)$/i)) {
-        resHeaders.set('Accept-Ranges', 'bytes');
-      }
-      
-      if (request.method === 'GET') {
-        ctx.waitUntil(
-          (async () => {
-            const cache = caches.default;
-            const cachedResponse = new Response(responseToCache.body, {
-              status: responseToCache.status,
-              statusText: responseToCache.statusText,
-              headers: resHeaders
-            });
-            await cache.put(cacheKey, cachedResponse);
-          })()
-        );
-      }
-    } else if (isStreamingRequest) {
-      resHeaders.set('Cache-Control', 'no-cache, no-transform, must-revalidate');
-      resHeaders.set('X-Accel-Buffering', 'no');
-      resHeaders.set('CF-Cache-Status', 'DYNAMIC');
-      resHeaders.set('Transfer-Encoding', 'chunked');
-      resHeaders.set('Connection', 'keep-alive');
-      resHeaders.set('Content-Type', 'text/event-stream');
-      resHeaders.delete('content-length');
-    } else {
-      resHeaders.set('Cache-Control', 'no-cache');
-      resHeaders.set('CF-Cache-Status', 'BYPASS');
-    }
-    
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: resHeaders
-    });
   }
 };
