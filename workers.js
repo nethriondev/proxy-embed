@@ -118,8 +118,12 @@ class RateLimiter {
   }
 }
 
-function getCacheTtl(url, responseContentType) {
+function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
+  
+  if (hasRangeHeader) {
+    return 3600;
+  }
   
   if (responseContentType.includes('application/json')) {
     return 0;
@@ -179,6 +183,8 @@ export default {
 
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
+    const rangeHeader = request.headers.get('range');
+    const isVideoRequest = url.pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i);
     const rateLimiter = new RateLimiter(env);
     
     if (await rateLimiter.isBlocked(clientIP)) {
@@ -195,10 +201,13 @@ export default {
                               acceptHeader.includes('application/stream+json') ||
                               request.headers.get('x-stream') === 'true';
     
-    const cacheKey = new Request(url.toString(), request);
+    const cacheKey = new Request(
+      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+      request
+    );
     let response = null;
     
-    if (request.method === 'GET') {
+    if (request.method === 'GET' && !rangeHeader) {
       const cache = caches.default;
       const cachedResponse = await cache.match(cacheKey);
       
@@ -218,7 +227,7 @@ export default {
       }
     }
     
-    async function tryFetch(hostname) {
+    async function tryFetch(hostname, rangeHeader) {
       const fetchUrl = new URL(request.url);
       fetchUrl.hostname = hostname;
       fetchUrl.protocol = 'https:';
@@ -233,6 +242,10 @@ export default {
         }
       };
       
+      if (rangeHeader) {
+        fetchOptions.headers.set('Range', rangeHeader);
+      }
+      
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         fetchOptions.body = request.body;
       }
@@ -240,12 +253,21 @@ export default {
       return fetch(fetchUrl.toString(), fetchOptions);
     }
     
-    response = await tryFetch('apiremake-production-4cd1.up.railway.app');
+    response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
     
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);
     const contentType = response.headers.get('content-type') || '';
-    const cacheTtl = getCacheTtl(url, contentType);
+    
+    if (rangeHeader && response.status === 206) {
+      const contentRange = response.headers.get('content-range');
+      if (contentRange) {
+        resHeaders.set('content-range', contentRange);
+      }
+      resHeaders.set('accept-ranges', 'bytes');
+    }
+    
+    const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
     
     resHeaders.set('Access-Control-Allow-Origin', '*');
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -272,7 +294,7 @@ export default {
       resHeaders.set('ratelimit-reset', originRateReset);
     }
     
-    const shouldCache = cacheTtl > 0 && response.status === 200;
+    const shouldCache = cacheTtl > 0 && response.status === 200 && !rangeHeader;
     
     if (shouldCache) {
       const isPlaylist = contentType.includes('application/vnd.apple.mpegurl') || 
