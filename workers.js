@@ -1,3 +1,5 @@
+// @kennethpanio
+
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -311,7 +313,7 @@ export default {
       }
       
       try {
-        const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+        const response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
         
         const originRateLimit = response.headers.get('ratelimit-limit');
         const originRateReset = response.headers.get('ratelimit-reset');
@@ -438,7 +440,7 @@ export default {
       }
       
       try {
-        const response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
+        const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
         
         const responseToCache = response.clone();
         const resHeaders = new Headers(response.headers);
