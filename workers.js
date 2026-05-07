@@ -1,5 +1,4 @@
-// @kennethpanio
-
+const ORIGIN_URL = 'https://apiremake-production-441b.up.railway.app';
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -150,21 +149,6 @@ class RateLimiter {
       return { blocked: false, count: 0, error: true };
     }
   }
-
-  async checkSessionLimit(ip, url, limit, windowSeconds) {
-    const sessionKey = `${ip}:${url.pathname}`;
-    
-    if (this.sessionActive.has(sessionKey)) {
-      return { blocked: false, sessionActive: true };
-    }
-    
-    this.sessionActive.set(sessionKey, Date.now());
-    setTimeout(() => {
-      this.sessionActive.delete(sessionKey);
-    }, windowSeconds * 1000);
-    
-    return await this.checkLimit(ip, limit, windowSeconds);
-  }
 }
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
@@ -219,7 +203,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
 
 function isVideoSegment(url) {
   const pathname = url.pathname.toLowerCase();
-  return pathname.match(/\.(ts|m4s|mp4|webm|avi|mov|mkv)$/i);
+  return pathname.match(/\.(ts|m4s)$/i);
 }
 
 function isFirstRequest(url, headers) {
@@ -273,9 +257,9 @@ export default {
       newHeaders.set('x-real-ip', clientIP);
       newHeaders.set('cf-connecting-ip', clientIP);
       
-      async function tryFetch(hostname, rangeHeader) {
+      async function tryFetch(rangeHeader) {
         const fetchUrl = new URL(request.url);
-        fetchUrl.hostname = hostname;
+        fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
         fetchUrl.protocol = 'https:';
         fetchUrl.port = '443';
         
@@ -313,7 +297,7 @@ export default {
       }
       
       try {
-        const response = await tryFetch('apiremake-production-441b.up.railway.app', rangeHeader);
+        const response = await tryFetch(rangeHeader);
         
         const originRateLimit = response.headers.get('ratelimit-limit');
         const originRateReset = response.headers.get('ratelimit-reset');
@@ -400,9 +384,9 @@ export default {
       newHeaders.set('x-real-ip', clientIP);
       newHeaders.set('cf-connecting-ip', clientIP);
       
-      async function tryFetch(hostname, rangeHeader) {
+      async function tryFetch(rangeHeader) {
         const fetchUrl = new URL(request.url);
-        fetchUrl.hostname = hostname;
+        fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
         fetchUrl.protocol = 'https:';
         fetchUrl.port = '443';
         
@@ -440,7 +424,7 @@ export default {
       }
       
       try {
-        const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+        const response = await tryFetch(rangeHeader);
         
         const responseToCache = response.clone();
         const resHeaders = new Headers(response.headers);
@@ -461,7 +445,7 @@ export default {
         resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
         resHeaders.set('Access-Control-Expose-Headers', '*');
         resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(limitConfig.remaining || limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(limitConfig.limit));
         resHeaders.set('ratelimit-reset', String(limitConfig.reset));
         
         const shouldCache = cacheTtl > 0 && 
@@ -507,9 +491,9 @@ export default {
     newHeaders.set('x-real-ip', clientIP);
     newHeaders.set('cf-connecting-ip', clientIP);
     
-    async function tryFetch(hostname, rangeHeader) {
+    async function tryFetch(rangeHeader) {
       const fetchUrl = new URL(request.url);
-      fetchUrl.hostname = hostname;
+      fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
       fetchUrl.protocol = 'https:';
       fetchUrl.port = '443';
       
@@ -547,7 +531,7 @@ export default {
     }
     
     try {
-      const response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+      const response = await tryFetch(rangeHeader);
       
       const responseToCache = response.clone();
       const resHeaders = new Headers(response.headers);
@@ -570,7 +554,7 @@ export default {
       
       if (limitConfig) {
         resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(limitConfig.remaining || limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(limitConfig.limit));
         resHeaders.set('ratelimit-reset', String(limitConfig.reset));
       }
       
