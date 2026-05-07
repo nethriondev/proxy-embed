@@ -1,12 +1,14 @@
 name = "proxy-embed"
-compatibility_date = "2022-07-12"
+compatibility_date = "2024-12-01"
 main = "workers.js"
 
-[[unsafe.bindings]]
-name = "ratelimit"
-type = "ratelimit"
-namespace_id = "1234"
-simple = { limit = 100, period = 60 }
+[[durable_objects.bindings]]
+name = "RATE_LIMITER_DO"
+class_name = "RateLimiterDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiterDO"]
 
 [observability]
 enabled = true

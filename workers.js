@@ -49,82 +49,73 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-class RateLimiter {
-  constructor() {
+export class RateLimiterDO {
+  constructor(state, env) {
+    this.state = state;
     this.blockedIPs = new Map();
     this.ipLimits = new Map();
   }
 
-  isBlocked(ip) {
-    if (this.blockedIPs.has(ip)) {
-      if (Date.now() - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
-        return true;
-      }
-      this.blockedIPs.delete(ip);
-    }
-    return false;
-  }
-
-  blockIP(ip) {
-    this.blockedIPs.set(ip, Date.now());
-  }
-
-  checkLimit(ip) {
-    let entry = this.ipLimits.get(ip);
-
-    if (!entry || Date.now() > entry.reset * 1000) {
-      entry = { limit: DEFAULT_LIMIT, reset: Math.floor(Date.now() / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
-      this.ipLimits.set(ip, entry);
+  async fetch(request) {
+    const { ip, action, limit, reset } = await request.json();
+    if (!ip || !action) {
+      return new Response(JSON.stringify({ error: 'Missing ip or action' }), { status: 400 });
     }
 
-    entry.count++;
-
-    if (entry.count > entry.limit) {
-      this.blockIP(ip);
-      return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
-    }
-
-    return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
-  }
-
-  mirrorOrigin(ip, originLimit, originReset) {
-    if (!originLimit || !originReset) return;
-
-    const reset = parseInt(originReset);
-    const limit = parseInt(originLimit);
-    if (isNaN(limit) || isNaN(reset)) return;
-
-    const now = Math.floor(Date.now() / 1000);
-    if (reset <= now) return;
-
-    const existing = this.ipLimits.get(ip);
-    if (existing) {
-      existing.limit = limit;
-      existing.reset = reset;
-      existing.mirrored = true;
-      if (existing.count > limit) {
-        this.blockIP(ip);
-      }
-    }
-  }
-
-  cleanup() {
     const now = Date.now();
-    for (const [ip, entry] of this.ipLimits) {
-      if (now > entry.reset * 1000) {
-        this.ipLimits.delete(ip);
-      }
-    }
-    for (const [ip, time] of this.blockedIPs) {
-      if (now - time > BLOCK_DURATION * 1000) {
+
+    if (action === 'check') {
+      if (this.blockedIPs.has(ip)) {
+        if (now - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
+          return new Response(JSON.stringify({ blocked: true, reason: 'blocked' }));
+        }
         this.blockedIPs.delete(ip);
       }
+
+      let entry = this.ipLimits.get(ip);
+      if (!entry || now > entry.reset * 1000) {
+        entry = { limit: DEFAULT_LIMIT, reset: Math.floor(now / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
+        this.ipLimits.set(ip, entry);
+      }
+
+      entry.count++;
+
+      if (entry.count > entry.limit) {
+        this.blockedIPs.set(ip, now);
+        return new Response(JSON.stringify({ blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored }));
+      }
+
+      return new Response(JSON.stringify({ blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored }));
     }
+
+    if (action === 'mirror') {
+      if (!limit || !reset) {
+        return new Response(JSON.stringify({ ok: false }));
+      }
+      const parsedLimit = parseInt(limit);
+      const parsedReset = parseInt(reset);
+      if (isNaN(parsedLimit) || isNaN(parsedReset)) {
+        return new Response(JSON.stringify({ ok: false }));
+      }
+      if (parsedReset <= Math.floor(now / 1000)) {
+        return new Response(JSON.stringify({ ok: false }));
+      }
+
+      const entry = this.ipLimits.get(ip);
+      if (entry) {
+        entry.limit = parsedLimit;
+        entry.reset = parsedReset;
+        entry.mirrored = true;
+        if (entry.count > parsedLimit) {
+          this.blockedIPs.set(ip, now);
+        }
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    }
+
+    return new Response(JSON.stringify({ error: 'Unknown action' }), { status: 400 });
   }
 }
-
-const rateLimiter = new RateLimiter();
-let requestCount = 0;
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
@@ -249,18 +240,19 @@ export default {
       });
     }
 
-    if (++requestCount % 100 === 0) {
-      rateLimiter.cleanup();
-    }
-
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-    if (rateLimiter.isBlocked(clientIP)) {
-      return new Response(null, { status: 444 });
-    }
 
-    const rateResult = rateLimiter.checkLimit(clientIP);
+    const doId = env.RATE_LIMITER_DO.idFromName('global');
+    const doStub = env.RATE_LIMITER_DO.get(doId);
+
+    const checkRes = await doStub.fetch('https://do/', {
+      method: 'POST',
+      body: JSON.stringify({ ip: clientIP, action: 'check' })
+    });
+    const rateResult = await checkRes.json();
+
     if (rateResult.blocked) {
       return new Response(null, { status: 444 });
     }
@@ -303,12 +295,15 @@ export default {
 
     const originLimit = response.headers.get('ratelimit-limit');
     const originReset = response.headers.get('ratelimit-reset');
-    rateLimiter.mirrorOrigin(clientIP, originLimit, originReset);
 
-    const recheck = rateLimiter.ipLimits.get(clientIP);
-    const limit = recheck ? recheck.limit : rateResult.limit;
-    const reset = recheck ? recheck.reset : rateResult.reset;
-    const count = recheck ? recheck.count : rateResult.count;
+    if (originLimit && originReset) {
+      ctx.waitUntil(
+        doStub.fetch('https://do/', {
+          method: 'POST',
+          body: JSON.stringify({ ip: clientIP, action: 'mirror', limit: originLimit, reset: originReset })
+        })
+      );
+    }
 
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);
@@ -326,9 +321,9 @@ export default {
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
     resHeaders.set('Access-Control-Expose-Headers', '*');
-    resHeaders.set('ratelimit-limit', String(limit));
-    resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - count)));
-    resHeaders.set('ratelimit-reset', String(reset));
+    resHeaders.set('ratelimit-limit', String(rateResult.limit));
+    resHeaders.set('ratelimit-remaining', String(Math.max(0, rateResult.limit - rateResult.count)));
+    resHeaders.set('ratelimit-reset', String(rateResult.reset));
 
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
     const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
