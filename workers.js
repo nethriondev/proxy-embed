@@ -1,4 +1,9 @@
 const ORIGIN_URL = 'https://apiremake-production-441b.up.railway.app';
+
+const DEFAULT_LIMIT = 1500;
+const DEFAULT_WINDOW = 3600;
+const BLOCK_DURATION = 15 * 60;
+
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -45,110 +50,60 @@ const getClientIp = (request) => {
 };
 
 class RateLimiter {
-  constructor(env) {
-    this.kv = env.RATE_LIMIT_KV;
-    this.blockDuration = 15 * 60;
+  constructor() {
     this.blockedIPs = new Map();
+    this.ipLimits = new Map();
   }
 
-  async isBlocked(ip) {
+  isBlocked(ip) {
     if (this.blockedIPs.has(ip)) {
-      const blockTime = this.blockedIPs.get(ip);
-      if (Date.now() - blockTime < this.blockDuration * 1000) {
+      if (Date.now() - this.blockedIPs.get(ip) < BLOCK_DURATION * 1000) {
         return true;
       }
       this.blockedIPs.delete(ip);
     }
-
-    try {
-      const blockedData = await this.kv.get(`blocked:${ip}`);
-      if (blockedData) {
-        const blockInfo = JSON.parse(blockedData);
-        if (Date.now() - blockInfo.blockedAt < this.blockDuration * 1000) {
-          this.blockedIPs.set(ip, blockInfo.blockedAt);
-          return true;
-        } else {
-          await this.kv.delete(`blocked:${ip}`);
-          await this.kv.delete(`ratelimit:${ip}`);
-          await this.kv.delete(`ratelimit_config:${ip}`);
-        }
-      }
-    } catch (error) {}
     return false;
   }
 
-  async blockIP(ip) {
-    const now = Date.now();
-    this.blockedIPs.set(ip, now);
-    await this.kv.put(`blocked:${ip}`, JSON.stringify({
-      blockedAt: now
-    }), { expirationTtl: this.blockDuration });
+  blockIP(ip) {
+    this.blockedIPs.set(ip, Date.now());
   }
 
-  async getRateLimitConfig(ip) {
-    const key = `ratelimit_config:${ip}`;
-    const now = Math.floor(Date.now() / 1000);
-    
-    try {
-      const config = await this.kv.get(key, { type: "json" });
-      
-      if (config && config.reset > now) {
-        return config;
-      }
-    } catch (error) {}
-    
-    return null;
+  checkLimit(ip) {
+    let entry = this.ipLimits.get(ip);
+
+    if (!entry || Date.now() > entry.reset * 1000) {
+      entry = { limit: DEFAULT_LIMIT, reset: Math.floor(Date.now() / 1000) + DEFAULT_WINDOW, count: 0, mirrored: false };
+      this.ipLimits.set(ip, entry);
+    }
+
+    entry.count++;
+
+    if (entry.count > entry.limit) {
+      this.blockIP(ip);
+      return { blocked: true, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
+    }
+
+    return { blocked: false, count: entry.count, limit: entry.limit, reset: entry.reset, mirrored: entry.mirrored };
   }
 
-  async setRateLimitConfig(ip, limit, reset) {
-    const key = `ratelimit_config:${ip}`;
-    const now = Math.floor(Date.now() / 1000);
-    const windowSeconds = reset - now;
-    
-    const config = {
-      limit: limit,
-      reset: reset,
-      windowSeconds: windowSeconds
-    };
-    
-    await this.kv.put(key, JSON.stringify(config), { expirationTtl: windowSeconds + 300 });
-    return config;
-  }
+  mirrorOrigin(ip, originLimit, originReset) {
+    if (!originLimit || !originReset) return;
 
-  async checkLimit(ip, limit, windowSeconds) {
-    try {
-      const now = Date.now();
-      const key = `ratelimit:${ip}`;
-      const data = await this.kv.get(key);
-      const windowMs = windowSeconds * 1000;
-      
-      let requestData;
-      if (data) {
-        requestData = JSON.parse(data);
-        if (now - requestData.windowStart > windowMs) {
-          requestData = { windowStart: now, count: 1 };
-        } else {
-          requestData.count++;
-        }
-      } else {
-        requestData = { windowStart: now, count: 1 };
-      }
+    const reset = parseInt(originReset);
+    const limit = parseInt(originLimit);
+    if (isNaN(limit) || isNaN(reset)) return;
 
-      if (requestData.count > limit) {
-        await this.blockIP(ip);
-        return { blocked: true, count: requestData.count };
-      }
-
-      await this.kv.put(key, JSON.stringify(requestData), { 
-        expirationTtl: Math.ceil(windowMs / 1000) 
-      });
-
-      return { blocked: false, count: requestData.count };
-    } catch (error) {
-      return { blocked: false, count: 0, error: true };
+    const existing = this.ipLimits.get(ip);
+    if (existing) {
+      existing.limit = limit;
+      existing.reset = reset;
+      existing.mirrored = true;
     }
   }
 }
+
+const rateLimiter = new RateLimiter();
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
@@ -219,6 +174,47 @@ function isFirstRequest(url, headers) {
   return false;
 }
 
+async function proxyFetch(url, request, clientIP, rangeHeader) {
+  const newHeaders = new Headers(request.headers);
+  newHeaders.set('x-forwarded-for', clientIP);
+  newHeaders.set('x-real-ip', clientIP);
+  newHeaders.set('cf-connecting-ip', clientIP);
+
+  const fetchUrl = new URL(url.toString());
+  fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
+  fetchUrl.protocol = 'https:';
+  fetchUrl.port = '443';
+
+  const fetchOptions = {
+    method: request.method,
+    headers: newHeaders,
+    cf: { polish: 'lossy', mirage: true }
+  };
+
+  if (rangeHeader) {
+    fetchOptions.headers.set('Range', rangeHeader);
+  }
+
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    fetchOptions.body = request.body;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(fetchUrl.toString(), {
+      ...fetchOptions,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -235,419 +231,110 @@ export default {
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-    const rateLimiter = new RateLimiter(env);
-    
-    const isBlockedPromise = rateLimiter.isBlocked(clientIP);
-    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(false), 100));
-    const isBlocked = await Promise.race([isBlockedPromise, timeoutPromise]);
-    
-    if (isBlocked) {
+    if (rateLimiter.isBlocked(clientIP)) {
       return new Response(null, { status: 444 });
     }
-    
-    const isManifestOrFirst = isFirstRequest(url, request.headers);
-    const isSegment = isVideoSegment(url);
-    
-    let limitConfig = await rateLimiter.getRateLimitConfig(clientIP);
-    
-    if (!limitConfig && isManifestOrFirst) {
-      const newHeaders = new Headers(request.headers);
-      newHeaders.set('x-forwarded-for', clientIP);
-      newHeaders.set('x-real-ip', clientIP);
-      newHeaders.set('cf-connecting-ip', clientIP);
-      
-      async function tryFetch(rangeHeader) {
-        const fetchUrl = new URL(request.url);
-        fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
-        fetchUrl.protocol = 'https:';
-        fetchUrl.port = '443';
-        
-        const fetchOptions = {
-          method: request.method,
-          headers: newHeaders,
-          cf: {
-            polish: 'lossy',
-            mirage: true,
-          }
-        };
-        
-        if (rangeHeader) {
-          fetchOptions.headers.set('Range', rangeHeader);
-        }
-        
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
-          fetchOptions.body = request.body;
-        }
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
-        
-        try {
-          const response = await fetch(fetchUrl.toString(), {
-            ...fetchOptions,
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          return response;
-        } catch (error) {
-          clearTimeout(timeoutId);
-          throw error;
-        }
-      }
-      
-      try {
-        const response = await tryFetch(rangeHeader);
-        
-        const originRateLimit = response.headers.get('ratelimit-limit');
-        const originRateReset = response.headers.get('ratelimit-reset');
-        
-        let limit = 1500;
-        let reset = Math.floor(Date.now() / 1000) + 3600;
-        
-        if (originRateLimit && originRateReset) {
-          limit = parseInt(originRateLimit);
-          reset = parseInt(originRateReset);
-        }
-        
-        limitConfig = await rateLimiter.setRateLimitConfig(clientIP, limit, reset);
-        
-        const rateResult = await rateLimiter.checkLimit(clientIP, limit, limitConfig.windowSeconds);
-        
-        if (rateResult.blocked) {
-          return new Response(null, { status: 444 });
-        }
-        
-        const responseToCache = response.clone();
-        const resHeaders = new Headers(response.headers);
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (response.status === 206) {
-          const contentRange = response.headers.get('content-range');
-          if (contentRange) {
-            resHeaders.set('content-range', contentRange);
-          }
-          resHeaders.set('accept-ranges', 'bytes');
-        }
-        
-        const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-        
-        resHeaders.set('Access-Control-Allow-Origin', '*');
-        resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-        resHeaders.set('Access-Control-Expose-Headers', '*');
-        resHeaders.set('ratelimit-limit', String(limit));
-        resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - rateResult.count)));
-        resHeaders.set('ratelimit-reset', String(reset));
-        
-        const shouldCache = cacheTtl > 0 && 
-                           (response.status === 200 || response.status === 206);
-        
-        if (shouldCache) {
-          resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
-          resHeaders.set('CF-Cache-Status', 'MISS');
-          resHeaders.set('X-Cache', 'MISS');
-          
-          if (request.method === 'GET') {
-            ctx.waitUntil(
-              (async () => {
-                const cache = caches.default;
-                const cacheKey = new Request(
-                  rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-                  request
-                );
-                const cachedResponse = new Response(responseToCache.body, {
-                  status: responseToCache.status,
-                  statusText: responseToCache.statusText,
-                  headers: resHeaders
-                });
-                await cache.put(cacheKey, cachedResponse);
-              })()
-            );
-          }
-        }
-        
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: resHeaders
-        });
-        
-      } catch (error) {
-        return new Response('Origin server error', { status: 502 });
-      }
+
+    const rateResult = rateLimiter.checkLimit(clientIP);
+    if (rateResult.blocked) {
+      return new Response(null, { status: 444 });
     }
-    
-    if (isSegment && limitConfig) {
-      const newHeaders = new Headers(request.headers);
-      newHeaders.set('x-forwarded-for', clientIP);
-      newHeaders.set('x-real-ip', clientIP);
-      newHeaders.set('cf-connecting-ip', clientIP);
-      
-      async function tryFetch(rangeHeader) {
-        const fetchUrl = new URL(request.url);
-        fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
-        fetchUrl.protocol = 'https:';
-        fetchUrl.port = '443';
-        
-        const fetchOptions = {
-          method: request.method,
-          headers: newHeaders,
-          cf: {
-            polish: 'lossy',
-            mirage: true,
-          }
-        };
-        
-        if (rangeHeader) {
-          fetchOptions.headers.set('Range', rangeHeader);
-        }
-        
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
-          fetchOptions.body = request.body;
-        }
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
-        
-        try {
-          const response = await fetch(fetchUrl.toString(), {
-            ...fetchOptions,
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          return response;
-        } catch (error) {
-          clearTimeout(timeoutId);
-          throw error;
-        }
-      }
-      
-      try {
-        const response = await tryFetch(rangeHeader);
-        
-        const responseToCache = response.clone();
-        const resHeaders = new Headers(response.headers);
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (response.status === 206) {
-          const contentRange = response.headers.get('content-range');
-          if (contentRange) {
-            resHeaders.set('content-range', contentRange);
-          }
-          resHeaders.set('accept-ranges', 'bytes');
-        }
-        
-        const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-        
-        resHeaders.set('Access-Control-Allow-Origin', '*');
-        resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-        resHeaders.set('Access-Control-Expose-Headers', '*');
-        
-        let currentCount = limitConfig.limit;
-        try {
-          const key = `ratelimit:${clientIP}`;
-          const data = await rateLimiter.kv.get(key);
-          if (data) {
-            const parsed = JSON.parse(data);
-            currentCount = limitConfig.limit - parsed.count;
-          }
-        } catch(e) {}
-        
-        resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(Math.max(0, currentCount)));
-        resHeaders.set('ratelimit-reset', String(limitConfig.reset));
-        
-        const shouldCache = cacheTtl > 0 && 
-                           (response.status === 200 || response.status === 206);
-        
-        if (shouldCache) {
-          resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
-          resHeaders.set('CF-Cache-Status', 'MISS');
-          resHeaders.set('X-Cache', 'MISS');
-          
-          if (request.method === 'GET') {
-            ctx.waitUntil(
-              (async () => {
-                const cache = caches.default;
-                const cacheKey = new Request(
-                  rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-                  request
-                );
-                const cachedResponse = new Response(responseToCache.body, {
-                  status: responseToCache.status,
-                  statusText: responseToCache.statusText,
-                  headers: resHeaders
-                });
-                await cache.put(cacheKey, cachedResponse);
-              })()
-            );
-          }
-        }
-        
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: resHeaders
-        });
-        
-      } catch (error) {
-        return new Response('Origin server error', { status: 502 });
-      }
-    }
-    
-    const newHeaders = new Headers(request.headers);
-    newHeaders.set('x-forwarded-for', clientIP);
-    newHeaders.set('x-real-ip', clientIP);
-    newHeaders.set('cf-connecting-ip', clientIP);
-    
-    let cachedResponse = null;
+
     const cacheKey = new Request(
-      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
       request
     );
-    
+
     if (request.method === 'GET') {
       const cache = caches.default;
-      cachedResponse = await cache.match(cacheKey);
-    }
-    
-    if (limitConfig && cachedResponse) {
-      const rateResult = await rateLimiter.checkLimit(clientIP, limitConfig.limit, limitConfig.windowSeconds);
-      
-      if (rateResult.blocked) {
-        return new Response(null, { status: 444 });
-      }
-      
-      const cachedHeaders = new Headers(cachedResponse.headers);
-      cachedHeaders.set('CF-Cache-Status', 'HIT');
-      cachedHeaders.set('X-Cache', 'HIT');
-      cachedHeaders.set('Access-Control-Allow-Origin', '*');
-      cachedHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      cachedHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-      cachedHeaders.set('ratelimit-limit', String(limitConfig.limit));
-      cachedHeaders.set('ratelimit-remaining', String(Math.max(0, limitConfig.limit - rateResult.count)));
-      cachedHeaders.set('ratelimit-reset', String(limitConfig.reset));
-      
-      return new Response(cachedResponse.body, {
-        status: cachedResponse.status,
-        statusText: cachedResponse.statusText,
-        headers: cachedHeaders
-      });
-    }
-    
-    async function tryFetch(rangeHeader) {
-      const fetchUrl = new URL(request.url);
-      fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
-      fetchUrl.protocol = 'https:';
-      fetchUrl.port = '443';
-      
-      const fetchOptions = {
-        method: request.method,
-        headers: newHeaders,
-        cf: {
-          polish: 'lossy',
-          mirage: true,
-        }
-      };
-      
-      if (rangeHeader) {
-        fetchOptions.headers.set('Range', rangeHeader);
-      }
-      
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        fetchOptions.body = request.body;
-      }
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      
-      try {
-        const response = await fetch(fetchUrl.toString(), {
-          ...fetchOptions,
-          signal: controller.signal
+      const cachedResponse = await cache.match(cacheKey);
+
+      if (cachedResponse) {
+        const cachedHeaders = new Headers(cachedResponse.headers);
+        cachedHeaders.set('CF-Cache-Status', 'HIT');
+        cachedHeaders.set('X-Cache', 'HIT');
+        cachedHeaders.set('Access-Control-Allow-Origin', '*');
+        cachedHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        cachedHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+        cachedHeaders.set('ratelimit-limit', String(rateResult.limit));
+        cachedHeaders.set('ratelimit-remaining', String(Math.max(0, rateResult.limit - rateResult.count)));
+        cachedHeaders.set('ratelimit-reset', String(rateResult.reset));
+
+        return new Response(cachedResponse.body, {
+          status: cachedResponse.status,
+          statusText: cachedResponse.statusText,
+          headers: cachedHeaders
         });
-        clearTimeout(timeoutId);
-        return response;
-      } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
       }
     }
-    
+
+    let response;
     try {
-      const response = await tryFetch(rangeHeader);
-      
-      const responseToCache = response.clone();
-      const resHeaders = new Headers(response.headers);
-      const contentType = response.headers.get('content-type') || '';
-      
-      if (response.status === 206) {
-        const contentRange = response.headers.get('content-range');
-        if (contentRange) {
-          resHeaders.set('content-range', contentRange);
-        }
-        resHeaders.set('accept-ranges', 'bytes');
-      }
-      
-      const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-      
-      resHeaders.set('Access-Control-Allow-Origin', '*');
-      resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-      resHeaders.set('Access-Control-Expose-Headers', '*');
-      
-      if (limitConfig) {
-        let currentCount = limitConfig.limit;
-        try {
-          const key = `ratelimit:${clientIP}`;
-          const data = await rateLimiter.kv.get(key);
-          if (data) {
-            const parsed = JSON.parse(data);
-            currentCount = limitConfig.limit - parsed.count;
-          }
-        } catch(e) {}
-        
-        resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(Math.max(0, currentCount)));
-        resHeaders.set('ratelimit-reset', String(limitConfig.reset));
-      }
-      
-      const shouldCache = cacheTtl > 0 && 
-                         (response.status === 200 || response.status === 206);
-      
-      if (shouldCache) {
-        resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
-        resHeaders.set('CF-Cache-Status', 'MISS');
-        resHeaders.set('X-Cache', 'MISS');
-        
-        if (request.method === 'GET') {
-          ctx.waitUntil(
-            (async () => {
-              const cache = caches.default;
-              const cacheKey = new Request(
-                rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
-                request
-              );
-              const cachedResponse = new Response(responseToCache.body, {
-                status: responseToCache.status,
-                statusText: responseToCache.statusText,
-                headers: resHeaders
-              });
-              await cache.put(cacheKey, cachedResponse);
-            })()
-          );
-        }
-      }
-      
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: resHeaders
-      });
-      
+      response = await proxyFetch(url, request, clientIP, rangeHeader);
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
+
+    const originLimit = response.headers.get('ratelimit-limit');
+    const originReset = response.headers.get('ratelimit-reset');
+    rateLimiter.mirrorOrigin(clientIP, originLimit, originReset);
+
+    const recheck = rateLimiter.ipLimits.get(clientIP);
+    const limit = recheck ? recheck.limit : rateResult.limit;
+    const reset = recheck ? recheck.reset : rateResult.reset;
+    const count = recheck ? recheck.count : rateResult.count;
+
+    const responseToCache = response.clone();
+    const resHeaders = new Headers(response.headers);
+    const contentType = response.headers.get('content-type') || '';
+
+    if (response.status === 206) {
+      const contentRange = response.headers.get('content-range');
+      if (contentRange) {
+        resHeaders.set('content-range', contentRange);
+      }
+      resHeaders.set('accept-ranges', 'bytes');
+    }
+
+    resHeaders.set('Access-Control-Allow-Origin', '*');
+    resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+    resHeaders.set('Access-Control-Expose-Headers', '*');
+    resHeaders.set('ratelimit-limit', String(limit));
+    resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - count)));
+    resHeaders.set('ratelimit-reset', String(reset));
+
+    const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
+    const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
+
+    if (shouldCache) {
+      resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
+      resHeaders.set('CF-Cache-Status', 'MISS');
+      resHeaders.set('X-Cache', 'MISS');
+
+      if (request.method === 'GET') {
+        ctx.waitUntil(
+          (async () => {
+            const cache = caches.default;
+            const cacheKey = new Request(
+              rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
+              request
+            );
+            const cachedResponse = new Response(responseToCache.body, {
+              status: responseToCache.status,
+              statusText: responseToCache.statusText,
+              headers: resHeaders
+            });
+            await cache.put(cacheKey, cachedResponse);
+          })()
+        );
+      }
+    }
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: resHeaders
+    });
   }
 };
