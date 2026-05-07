@@ -94,16 +94,37 @@ class RateLimiter {
     const limit = parseInt(originLimit);
     if (isNaN(limit) || isNaN(reset)) return;
 
+    const now = Math.floor(Date.now() / 1000);
+    if (reset <= now) return;
+
     const existing = this.ipLimits.get(ip);
     if (existing) {
       existing.limit = limit;
       existing.reset = reset;
       existing.mirrored = true;
+      if (existing.count > limit) {
+        this.blockIP(ip);
+      }
+    }
+  }
+
+  cleanup() {
+    const now = Date.now();
+    for (const [ip, entry] of this.ipLimits) {
+      if (now > entry.reset * 1000) {
+        this.ipLimits.delete(ip);
+      }
+    }
+    for (const [ip, time] of this.blockedIPs) {
+      if (now - time > BLOCK_DURATION * 1000) {
+        this.blockedIPs.delete(ip);
+      }
     }
   }
 }
 
 const rateLimiter = new RateLimiter();
+let requestCount = 0;
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
@@ -226,6 +247,10 @@ export default {
           "Access-Control-Max-Age": "86400",
         }
       });
+    }
+
+    if (++requestCount % 100 === 0) {
+      rateLimiter.cleanup();
     }
 
     const clientIP = getClientIp(request);
