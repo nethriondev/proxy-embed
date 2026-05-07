@@ -43,6 +43,81 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
+class RateLimiter {
+  constructor(env) {
+    this.kv = env.RATE_LIMIT_KV;
+    this.blockDuration = 15 * 60;
+    this.blockedIPs = new Map();
+  }
+
+  async isBlocked(ip) {
+    if (this.blockedIPs.has(ip)) {
+      const blockTime = this.blockedIPs.get(ip);
+      if (Date.now() - blockTime < this.blockDuration * 1000) {
+        return true;
+      }
+      this.blockedIPs.delete(ip);
+    }
+
+    try {
+      const blockedData = await this.kv.get(`blocked:${ip}`);
+      if (blockedData) {
+        const blockInfo = JSON.parse(blockedData);
+        if (Date.now() - blockInfo.blockedAt < this.blockDuration * 1000) {
+          this.blockedIPs.set(ip, blockInfo.blockedAt);
+          return true;
+        } else {
+          await this.kv.delete(`blocked:${ip}`);
+          await this.kv.delete(`ratelimit:${ip}`);
+        }
+      }
+    } catch (error) {}
+    return false;
+  }
+
+  async blockIP(ip) {
+    const now = Date.now();
+    this.blockedIPs.set(ip, now);
+    await this.kv.put(`blocked:${ip}`, JSON.stringify({
+      blockedAt: now
+    }), { expirationTtl: this.blockDuration });
+  }
+
+  async checkLimit(ip, limit, windowSeconds) {
+    try {
+      const now = Date.now();
+      const key = `ratelimit:${ip}`;
+      const data = await this.kv.get(key);
+      const windowMs = windowSeconds * 1000;
+      
+      let requestData;
+      if (data) {
+        requestData = JSON.parse(data);
+        if (now - requestData.windowStart > windowMs) {
+          requestData = { windowStart: now, count: 1 };
+        } else {
+          requestData.count++;
+        }
+      } else {
+        requestData = { windowStart: now, count: 1 };
+      }
+
+      if (requestData.count > limit) {
+        await this.blockIP(ip);
+        return { blocked: true, count: requestData.count };
+      }
+
+      await this.kv.put(key, JSON.stringify(requestData), { 
+        expirationTtl: Math.ceil(windowMs / 1000) 
+      });
+
+      return { blocked: false, count: requestData.count };
+    } catch (error) {
+      return { blocked: false, count: 0, error: true };
+    }
+  }
+}
+
 function getCacheTtl(url, responseContentType) {
   const pathname = url.pathname.toLowerCase();
   
@@ -104,6 +179,11 @@ export default {
 
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
+    const rateLimiter = new RateLimiter(env);
+    
+    if (await rateLimiter.isBlocked(clientIP)) {
+      return new Response(null, { status: 444 });
+    }
     
     const newHeaders = new Headers(request.headers);
     newHeaders.set('x-forwarded-for', clientIP);
@@ -171,6 +251,26 @@ export default {
     resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
     resHeaders.set('Access-Control-Expose-Headers', '*');
+    
+    const originRateLimit = response.headers.get('ratelimit-limit');
+    const originRateReset = response.headers.get('ratelimit-reset');
+    
+    if (originRateLimit && originRateReset) {
+      const limit = parseInt(originRateLimit);
+      const resetTime = parseInt(originRateReset);
+      const now = Math.floor(Date.now() / 1000);
+      const windowSeconds = Math.max(1, resetTime - now);
+      
+      const rateResult = await rateLimiter.checkLimit(clientIP, limit, windowSeconds);
+      
+      if (rateResult.blocked) {
+        return new Response(null, { status: 444 });
+      }
+      
+      resHeaders.set('ratelimit-limit', originRateLimit);
+      resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - rateResult.count)));
+      resHeaders.set('ratelimit-reset', originRateReset);
+    }
     
     const shouldCache = cacheTtl > 0 && response.status === 200;
     
