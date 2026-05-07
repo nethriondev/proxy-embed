@@ -49,7 +49,6 @@ class RateLimiter {
     this.kv = env.RATE_LIMIT_KV;
     this.blockDuration = 15 * 60;
     this.blockedIPs = new Map();
-    this.sessionActive = new Map();
   }
 
   async isBlocked(ip) {
@@ -444,8 +443,19 @@ export default {
         resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
         resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
         resHeaders.set('Access-Control-Expose-Headers', '*');
+        
+        let currentCount = limitConfig.limit;
+        try {
+          const key = `ratelimit:${clientIP}`;
+          const data = await rateLimiter.kv.get(key);
+          if (data) {
+            const parsed = JSON.parse(data);
+            currentCount = limitConfig.limit - parsed.count;
+          }
+        } catch(e) {}
+        
         resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(Math.max(0, currentCount)));
         resHeaders.set('ratelimit-reset', String(limitConfig.reset));
         
         const shouldCache = cacheTtl > 0 && 
@@ -490,6 +500,41 @@ export default {
     newHeaders.set('x-forwarded-for', clientIP);
     newHeaders.set('x-real-ip', clientIP);
     newHeaders.set('cf-connecting-ip', clientIP);
+    
+    let cachedResponse = null;
+    const cacheKey = new Request(
+      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(), 
+      request
+    );
+    
+    if (request.method === 'GET') {
+      const cache = caches.default;
+      cachedResponse = await cache.match(cacheKey);
+    }
+    
+    if (limitConfig && cachedResponse) {
+      const rateResult = await rateLimiter.checkLimit(clientIP, limitConfig.limit, limitConfig.windowSeconds);
+      
+      if (rateResult.blocked) {
+        return new Response(null, { status: 444 });
+      }
+      
+      const cachedHeaders = new Headers(cachedResponse.headers);
+      cachedHeaders.set('CF-Cache-Status', 'HIT');
+      cachedHeaders.set('X-Cache', 'HIT');
+      cachedHeaders.set('Access-Control-Allow-Origin', '*');
+      cachedHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      cachedHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+      cachedHeaders.set('ratelimit-limit', String(limitConfig.limit));
+      cachedHeaders.set('ratelimit-remaining', String(Math.max(0, limitConfig.limit - rateResult.count)));
+      cachedHeaders.set('ratelimit-reset', String(limitConfig.reset));
+      
+      return new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        statusText: cachedResponse.statusText,
+        headers: cachedHeaders
+      });
+    }
     
     async function tryFetch(rangeHeader) {
       const fetchUrl = new URL(request.url);
@@ -553,8 +598,18 @@ export default {
       resHeaders.set('Access-Control-Expose-Headers', '*');
       
       if (limitConfig) {
+        let currentCount = limitConfig.limit;
+        try {
+          const key = `ratelimit:${clientIP}`;
+          const data = await rateLimiter.kv.get(key);
+          if (data) {
+            const parsed = JSON.parse(data);
+            currentCount = limitConfig.limit - parsed.count;
+          }
+        } catch(e) {}
+        
         resHeaders.set('ratelimit-limit', String(limitConfig.limit));
-        resHeaders.set('ratelimit-remaining', String(limitConfig.limit));
+        resHeaders.set('ratelimit-remaining', String(Math.max(0, currentCount)));
         resHeaders.set('ratelimit-reset', String(limitConfig.reset));
       }
       
