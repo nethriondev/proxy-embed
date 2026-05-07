@@ -48,6 +48,7 @@ class RateLimiter {
     this.kv = env.RATE_LIMIT_KV;
     this.blockDuration = 15 * 60;
     this.blockedIPs = new Map();
+    this.requestTimestamps = new Map();
   }
 
   async isBlocked(ip) {
@@ -116,6 +117,37 @@ class RateLimiter {
       return { blocked: false, count: 0, error: true };
     }
   }
+
+  async checkLimitNonBlocking(ip, limit, windowSeconds) {
+    try {
+      const now = Date.now();
+      const windowMs = windowSeconds * 1000;
+      
+      let timestamps = this.requestTimestamps.get(ip) || [];
+      timestamps = timestamps.filter(t => now - t < windowMs);
+      
+      if (timestamps.length >= limit) {
+        return { blocked: true, count: timestamps.length };
+      }
+      
+      timestamps.push(now);
+      this.requestTimestamps.set(ip, timestamps);
+      
+      const key = `ratelimit:${ip}`;
+      const requestData = { 
+        windowStart: timestamps[0] || now, 
+        count: timestamps.length 
+      };
+      
+      this.kv.put(key, JSON.stringify(requestData), { 
+        expirationTtl: Math.ceil(windowMs / 1000) 
+      }).catch(e => console.error(e));
+      
+      return { blocked: false, count: timestamps.length, remaining: limit - timestamps.length };
+    } catch (error) {
+      return { blocked: false, count: 0, error: true };
+    }
+  }
 }
 
 function getCacheTtl(url, responseContentType, hasRangeHeader) {
@@ -168,6 +200,24 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
   return 43200;
 }
 
+function isCDNOrVideoRequest(url, headers) {
+  const pathname = url.pathname.toLowerCase();
+  
+  if (pathname.match(/\.(mp4|webm|avi|mov|mkv|ts|m4s)$/i)) {
+    return true;
+  }
+  
+  if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) {
+    return true;
+  }
+  
+  if (headers.get('range')) {
+    return true;
+  }
+  
+  return false;
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -184,10 +234,14 @@ export default {
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-    const isVideoRequest = url.pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i);
+    const isCDNVideo = isCDNOrVideoRequest(url, request.headers);
     const rateLimiter = new RateLimiter(env);
     
-    if (await rateLimiter.isBlocked(clientIP)) {
+    const isBlockedPromise = rateLimiter.isBlocked(clientIP);
+    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(false), 100));
+    const isBlocked = await Promise.race([isBlockedPromise, timeoutPromise]);
+    
+    if (isBlocked) {
       return new Response(null, { status: 444 });
     }
     
@@ -207,7 +261,6 @@ export default {
     );
     let response = null;
     
-    // Check cache for ALL requests (including range/206)
     if (request.method === 'GET') {
       const cache = caches.default;
       const cachedResponse = await cache.match(cacheKey);
@@ -251,16 +304,32 @@ export default {
         fetchOptions.body = request.body;
       }
       
-      return fetch(fetchUrl.toString(), fetchOptions);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
+      try {
+        const response = await fetch(fetchUrl.toString(), {
+          ...fetchOptions,
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return response;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+      }
     }
     
-    response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+    try {
+      response = await tryFetch('apiremake-production-4cd1.up.railway.app', rangeHeader);
+    } catch (error) {
+      return new Response('Origin server error', { status: 502 });
+    }
     
     const responseToCache = response.clone();
     const resHeaders = new Headers(response.headers);
     const contentType = response.headers.get('content-type') || '';
     
-    // Handle 206 responses properly
     if (response.status === 206) {
       const contentRange = response.headers.get('content-range');
       if (contentRange) {
@@ -285,14 +354,20 @@ export default {
       const now = Math.floor(Date.now() / 1000);
       const windowSeconds = Math.max(1, resetTime - now);
       
-      const rateResult = await rateLimiter.checkLimit(clientIP, limit, windowSeconds);
+      let rateResult;
+      
+      if (isCDNVideo) {
+        rateResult = await rateLimiter.checkLimitNonBlocking(clientIP, limit, windowSeconds);
+      } else {
+        rateResult = await rateLimiter.checkLimit(clientIP, limit, windowSeconds);
+      }
       
       if (rateResult.blocked) {
         return new Response(null, { status: 444 });
       }
       
       resHeaders.set('ratelimit-limit', originRateLimit);
-      resHeaders.set('ratelimit-remaining', String(Math.max(0, limit - rateResult.count)));
+      resHeaders.set('ratelimit-remaining', String(rateResult.remaining || Math.max(0, limit - rateResult.count)));
       resHeaders.set('ratelimit-reset', originRateReset);
     }
    
