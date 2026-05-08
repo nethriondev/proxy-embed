@@ -148,20 +148,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader) {
     fetchOptions.body = request.body;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-  try {
-    const response = await fetch(fetchUrl.toString(), {
-      ...fetchOptions,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
+  return fetch(fetchUrl.toString(), fetchOptions);
 }
 
 export default {
@@ -218,9 +205,10 @@ export default {
       return new Response('Origin server error', { status: 502 });
     }
 
-    const responseToCache = response.clone();
-    const resHeaders = new Headers(response.headers);
     const contentType = response.headers.get('content-type') || '';
+    const isStreaming = contentType.includes('text/event-stream');
+    const responseToCache = isStreaming ? null : response.clone();
+    const resHeaders = new Headers(response.headers);
 
     if (response.status === 206) {
       const contentRange = response.headers.get('content-range');
