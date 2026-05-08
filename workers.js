@@ -166,6 +166,14 @@ async function proxyFetch(url, request, clientIP, rangeHeader) {
 
 export default {
   async fetch(request, env, ctx) {
+    if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const url = new URL(request.url);
+      url.hostname = new URL(ORIGIN_URL).hostname;
+      url.protocol = 'https:';
+      url.port = '443';
+      return fetch(url.toString(), request);
+    }
+
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
