@@ -72,6 +72,16 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
     return 3600;
   }
   
+  if (responseContentType.includes('text/css') ||
+      responseContentType.includes('application/javascript') ||
+      responseContentType.includes('text/javascript') ||
+      responseContentType.includes('application/x-javascript') ||
+      responseContentType.includes('text/plain') ||
+      responseContentType.includes('text/xml') ||
+      responseContentType.includes('application/xml')) {
+    return 43200;
+  }
+  
   if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
     return 0;
   }
