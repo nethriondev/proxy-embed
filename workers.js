@@ -63,7 +63,8 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
     return 3600;
   }
   
-  if (responseContentType.includes('application/json')) {
+  if (responseContentType.includes('application/json') ||
+      responseContentType.includes('text/event-stream')) {
     return 0;
   }
   
