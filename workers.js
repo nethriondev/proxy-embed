@@ -228,7 +228,7 @@ export default {
     resHeaders.set('Access-Control-Expose-Headers', '*');
 
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-    const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
+    const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206 || response.status === 404);
 
     if (shouldCache) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
