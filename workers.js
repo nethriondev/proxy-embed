@@ -1,4 +1,6 @@
-const ORIGIN_URL = 'https://apiremake-production-441b.up.railway.app';
+const ORIGIN_URLS = [
+  'https://apiremake-production-441b.up.railway.app',
+];
 
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
@@ -123,39 +125,53 @@ async function proxyFetch(url, request, clientIP, rangeHeader) {
   newHeaders.set('x-real-ip', clientIP);
   newHeaders.set('cf-connecting-ip', clientIP);
 
-  const fetchUrl = new URL(url.toString());
-  fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
-  fetchUrl.protocol = 'https:';
-  fetchUrl.port = '443';
-
   const cfSettings = { polish: 'lossy', mirage: true };
   const urlCacheTtl = getUrlCacheTtl(url, !!rangeHeader);
   if (urlCacheTtl !== undefined) {
     cfSettings.cacheTtl = urlCacheTtl;
   }
 
-  const fetchOptions = {
-    method: request.method,
-    headers: newHeaders,
-    cf: cfSettings
-  };
+  let lastError;
 
-  if (rangeHeader) {
-    fetchOptions.headers.set('Range', rangeHeader);
+  for (const originUrl of ORIGIN_URLS) {
+    const fetchUrl = new URL(url.toString());
+    fetchUrl.hostname = new URL(originUrl).hostname;
+    fetchUrl.protocol = 'https:';
+    fetchUrl.port = '443';
+
+    const fetchOptions = {
+      method: request.method,
+      headers: new Headers(newHeaders),
+      cf: { ...cfSettings }
+    };
+
+    if (rangeHeader) {
+      fetchOptions.headers.set('Range', rangeHeader);
+    }
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      fetchOptions.body = request.body;
+    }
+
+    try {
+      const response = await fetch(fetchUrl.toString(), fetchOptions);
+      if (response.ok || response.status === 206 || response.status === 404) {
+        return response;
+      }
+      lastError = new Error(`Origin ${originUrl} returned status ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    fetchOptions.body = request.body;
-  }
-
-  return fetch(fetchUrl.toString(), fetchOptions);
+  throw lastError || new Error('All origins failed');
 }
 
 export default {
   async fetch(request, env, ctx) {
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const url = new URL(request.url);
-      url.hostname = new URL(ORIGIN_URL).hostname;
+      url.hostname = new URL(ORIGIN_URLS[0]).hostname;
       url.protocol = 'https:';
       url.port = '443';
       return fetch(url.toString(), request);
