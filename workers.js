@@ -1,5 +1,5 @@
 const ORIGIN_URLS = [
-  'https://apiremake-production-441b.up.railway.app',
+  'https://apiremake-production-4552.up.railway.app',
 ];
 
 const getClientIp = (request) => {
