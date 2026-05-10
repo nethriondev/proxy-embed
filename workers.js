@@ -192,19 +192,6 @@ export default {
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
 
-    if (request.method === 'GET' && url.pathname === '/purge') {
-      const cache = caches.default;
-      const purgeUrl = request.headers.get('X-Purge-Url');
-      
-      if (purgeUrl) {
-        const purgeKey = new Request(purgeUrl, request);
-        await cache.delete(purgeKey);
-        return new Response(`Purged: ${purgeUrl}`, { status: 200 });
-      }
-      
-      return new Response('Missing X-Purge-Url header', { status: 400 });
-    }
-
     const cacheKey = new Request(
       rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
       request
