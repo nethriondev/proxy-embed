@@ -195,28 +195,6 @@ export default {
     const rangeHeader = request.headers.get('range');
     const isPlayerPath = url.pathname === '/player';
 
-    const cacheKey = new Request(
-      rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
-      request
-    );
-
-    if (request.method === 'GET' && !isPlayerPath) {
-      const cache = caches.default;
-      const cachedResponse = await cache.match(cacheKey);
-
-      if (cachedResponse) {
-        const cachedHeaders = new Headers(cachedResponse.headers);
-        cachedHeaders.set('CF-Cache-Status', 'HIT');
-        cachedHeaders.set('X-Cache', 'HIT');
-
-        return new Response(cachedResponse.body, {
-          status: cachedResponse.status,
-          statusText: cachedResponse.statusText,
-          headers: cachedHeaders
-        });
-      }
-    }
-
     let response;
     try {
       response = await proxyFetch(url, request, clientIP, rangeHeader, isPlayerPath);
@@ -225,8 +203,6 @@ export default {
     }
 
     const contentType = response.headers.get('content-type') || '';
-    const isStreaming = contentType.includes('text/event-stream');
-    const responseToCache = isStreaming ? null : response.clone();
     const resHeaders = new Headers(response.headers);
 
     if (response.status === 206) {
@@ -251,24 +227,6 @@ export default {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
-
-      if (request.method === 'GET') {
-        ctx.waitUntil(
-          (async () => {
-            const cache = caches.default;
-            const cacheKey = new Request(
-              rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
-              request
-            );
-            const cachedResponse = new Response(responseToCache.body, {
-              status: responseToCache.status,
-              statusText: responseToCache.statusText,
-              headers: resHeaders
-            });
-            await cache.put(cacheKey, cachedResponse);
-          })()
-        );
-      }
     }
 
     return new Response(response.body, {
