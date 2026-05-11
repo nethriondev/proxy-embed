@@ -119,16 +119,18 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
   return 43200;
 }
 
-async function proxyFetch(url, request, clientIP, rangeHeader) {
+async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
   const newHeaders = new Headers(request.headers);
   newHeaders.set('x-forwarded-for', clientIP);
   newHeaders.set('x-real-ip', clientIP);
   newHeaders.set('cf-connecting-ip', clientIP);
 
   const cfSettings = { polish: 'lossy', mirage: true };
-  const urlCacheTtl = getUrlCacheTtl(url, !!rangeHeader);
-  if (urlCacheTtl !== undefined) {
-    cfSettings.cacheTtl = urlCacheTtl;
+  if (!noCache) {
+    const urlCacheTtl = getUrlCacheTtl(url, !!rangeHeader);
+    if (urlCacheTtl !== undefined) {
+      cfSettings.cacheTtl = urlCacheTtl;
+    }
   }
 
   let lastError;
@@ -191,13 +193,14 @@ export default {
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
+    const isPlayerPath = url.pathname === '/player';
 
     const cacheKey = new Request(
       rangeHeader ? `${url.toString()}|${rangeHeader}` : url.toString(),
       request
     );
 
-    if (request.method === 'GET') {
+    if (request.method === 'GET' && !isPlayerPath) {
       const cache = caches.default;
       const cachedResponse = await cache.match(cacheKey);
 
@@ -216,7 +219,7 @@ export default {
 
     let response;
     try {
-      response = await proxyFetch(url, request, clientIP, rangeHeader);
+      response = await proxyFetch(url, request, clientIP, rangeHeader, isPlayerPath);
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
@@ -242,7 +245,9 @@ export default {
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
     const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206 || response.status === 404);
 
-    if (shouldCache) {
+    if (isPlayerPath) {
+      resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    } else if (shouldCache) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
