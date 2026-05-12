@@ -3,7 +3,7 @@ const ORIGIN_URLS = [
 ];
 
 const BLOCKED_IPS = [
-  '72.60.237.246'
+  '1.2.3.4'
 ];
 
 const getClientIp = (request) => {
