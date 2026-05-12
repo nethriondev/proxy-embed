@@ -42,8 +42,8 @@ app.set('trust proxy', true);
 
 app.disable('etag');
 
-const getClientIp = (req) => {
-  const forwardedHeader = req.headers['forwarded'];
+const getClientIp = (request) => {
+  const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
     const forMatch = forwardedHeader.match(/for=([^;]+)/);
     if (forMatch && forMatch[1]) {
@@ -53,41 +53,38 @@ const getClientIp = (req) => {
     }
   }
 
-  if (req.headers['x-vercel-forwarded-for']) {
-    const ips = req.headers['x-vercel-forwarded-for'].split(',');
+  const vercelForwardedFor = request.headers.get('x-vercel-forwarded-for');
+  if (vercelForwardedFor) {
+    const ips = vercelForwardedFor.split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  if (req.headers['x-vercel-proxied-for']) {
-    const ips = req.headers['x-vercel-proxied-for'].split(',');
+  const vercelProxiedFor = request.headers.get('x-vercel-proxied-for');
+  if (vercelProxiedFor) {
+    const ips = vercelProxiedFor.split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  if (req.headers['x-forwarded-for']) {
-    const ips = req.headers['x-forwarded-for'].split(',');
+  const xForwardedFor = request.headers.get('x-forwarded-for');
+  if (xForwardedFor) {
+    const ips = xForwardedFor.split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  if (req.headers['x-real-ip']) {
-    return req.headers['x-real-ip'];
+  const xRealIp = request.headers.get('x-real-ip');
+  if (xRealIp) {
+    return xRealIp;
   }
 
-  if (req.headers['cf-connecting-ip']) {
-    return req.headers['cf-connecting-ip'];
-  }
-  
-  if (req.clientIp) {
-    return req.clientIp;
-  }
-  
-  if (req.socket?.remoteAddress) {
-    return req.socket.remoteAddress;
+  const cfConnectingIp = request.headers.get('cf-connecting-ip');
+  if (cfConnectingIp) {
+    return cfConnectingIp;
   }
 
-  return req.ip || 'unknown';
+  return 'unknown';
 };
 
 app.use((req, res, next) => {
