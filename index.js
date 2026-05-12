@@ -33,7 +33,6 @@ if (proxyUrls.length === 0) {
     }
 }
 
-// .
 if (proxyUrls.length === 0) {
     proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
     console.log("Using default proxy");
@@ -52,7 +51,7 @@ if (process.env.BLOCKED_IPS) {
 let currentProxyIndex = 0;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 10000;
-const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 60;
+const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 500;
 const MAX_CONCURRENT_PER_IP = parseInt(process.env.MAX_CONCURRENT_PER_IP) || 5;
 const BAN_THRESHOLD = parseInt(process.env.BAN_THRESHOLD) || 3;
 const BAN_DURATION_MS = parseInt(process.env.BAN_DURATION_MS) || 300000;
