@@ -142,7 +142,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
 
     try {
       const response = await fetch(fetchUrl.toString(), fetchOptions);
-      if (response.ok || response.status === 206 || response.status === 404) {
+      if (response.ok || response.status === 206) {
         return response;
       }
       lastError = new Error(`Origin ${originUrl} returned status ${response.status}`);
