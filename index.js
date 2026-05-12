@@ -61,7 +61,7 @@ const ipRequests = new Map();
 const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
-const trustedIps = new Set();
+let originTrustsProxy = false;
 
 const recordViolation = (ip) => {
     const count = (violationCounts.get(ip) || 0) + 1;
@@ -188,7 +188,7 @@ const getClientIp = (req) => {
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
 
-    if (trustedIps.has(req.clientIp)) {
+    if (originTrustsProxy) {
         next();
         return;
     }
@@ -314,7 +314,7 @@ app.use(
         },
         onProxyRes: (proxyRes, req, res) => {
             if (proxyRes.headers['x-is-internal'] === 'true') {
-                trustedIps.add(req.clientIp);
+                originTrustsProxy = true;
             }
 
             proxyRes.headers['access-control-allow-origin'] = '*';

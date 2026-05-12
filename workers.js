@@ -19,7 +19,7 @@ const ipRequests = new Map();
 const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
-const trustedIps = new Set();
+let originTrustsProxy = false;
 
 const cleanMaps = () => {
     const now = Date.now();
@@ -271,7 +271,7 @@ async function proxyRequestToOrigin(request, clientIP) {
   }
 
   if (response.headers.get('x-is-internal') === 'true') {
-    trustedIps.add(clientIP);
+    originTrustsProxy = true;
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -314,7 +314,7 @@ export default {
 
       const clientIP = getClientIp(request);
 
-      if (trustedIps.has(clientIP)) {
+      if (originTrustsProxy) {
         return await proxyRequestToOrigin(request, clientIP);
       }
 
