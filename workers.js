@@ -3,15 +3,10 @@ const ORIGIN_URLS = [
 ];
 
 const BLOCKED_IPS = [
-  '1.2.3.4'
+  '72.60.237.246'
 ];
 
 const getClientIp = (request) => {
-  const cfConnectingIp = request.headers.get('cf-connecting-ip');
-  if (cfConnectingIp) {
-    return cfConnectingIp;
-  }
-
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
     const forMatch = forwardedHeader.match(/for=([^;]+)/);
@@ -39,8 +34,8 @@ const getClientIp = (request) => {
   const xForwardedFor = request.headers.get('x-forwarded-for');
   if (xForwardedFor) {
     const ips = xForwardedFor.split(',');
-    const lastIp = ips[ips.length - 1]?.trim();
-    if (lastIp && lastIp !== 'unknown') return lastIp;
+    const firstIp = ips[0]?.trim();
+    if (firstIp) return firstIp;
   }
 
   const xRealIp = request.headers.get('x-real-ip');
@@ -48,8 +43,14 @@ const getClientIp = (request) => {
     return xRealIp;
   }
 
+  const cfConnectingIp = request.headers.get('cf-connecting-ip');
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
   return 'unknown';
 };
+
 
 function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   const pathname = url.pathname.toLowerCase();

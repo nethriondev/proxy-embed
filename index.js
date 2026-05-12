@@ -42,8 +42,8 @@ app.set('trust proxy', true);
 
 app.disable('etag');
 
-const getClientIp = (request) => {
-  const forwardedHeader = request.headers.get('forwarded');
+const getClientIp = (req) => {
+  const forwardedHeader = req.headers['forwarded'];
   if (forwardedHeader) {
     const forMatch = forwardedHeader.match(/for=([^;]+)/);
     if (forMatch && forMatch[1]) {
@@ -53,38 +53,41 @@ const getClientIp = (request) => {
     }
   }
 
-  const vercelForwardedFor = request.headers.get('x-vercel-forwarded-for');
-  if (vercelForwardedFor) {
-    const ips = vercelForwardedFor.split(',');
+  if (req.headers['x-vercel-forwarded-for']) {
+    const ips = req.headers['x-vercel-forwarded-for'].split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  const vercelProxiedFor = request.headers.get('x-vercel-proxied-for');
-  if (vercelProxiedFor) {
-    const ips = vercelProxiedFor.split(',');
+  if (req.headers['x-vercel-proxied-for']) {
+    const ips = req.headers['x-vercel-proxied-for'].split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  const xForwardedFor = request.headers.get('x-forwarded-for');
-  if (xForwardedFor) {
-    const ips = xForwardedFor.split(',');
+  if (req.headers['x-forwarded-for']) {
+    const ips = req.headers['x-forwarded-for'].split(',');
     const firstIp = ips[0]?.trim();
     if (firstIp) return firstIp;
   }
 
-  const xRealIp = request.headers.get('x-real-ip');
-  if (xRealIp) {
-    return xRealIp;
+  if (req.headers['x-real-ip']) {
+    return req.headers['x-real-ip'];
   }
 
-  const cfConnectingIp = request.headers.get('cf-connecting-ip');
-  if (cfConnectingIp) {
-    return cfConnectingIp;
+  if (req.headers['cf-connecting-ip']) {
+    return req.headers['cf-connecting-ip'];
+  }
+  
+  if (req.clientIp) {
+    return req.clientIp;
+  }
+  
+  if (req.socket?.remoteAddress) {
+    return req.socket.remoteAddress;
   }
 
-  return 'unknown';
+  return req.ip || 'unknown';
 };
 
 app.use((req, res, next) => {
