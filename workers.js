@@ -51,7 +51,7 @@ function getUrlCacheTtl(url, hasRangeHeader) {
   const pathname = url.pathname.toLowerCase();
 
   if (hasRangeHeader) return 3600;
-  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) return;
+  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) return 0;
   if (pathname.endsWith('.m3u8') || pathname.endsWith('.mpd')) return 43200;
   if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) return 43200;
   if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/i)) return 43200;
@@ -205,7 +205,7 @@ export default {
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
     const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
 
-   if (shouldCache) {
+    if (shouldCache) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
