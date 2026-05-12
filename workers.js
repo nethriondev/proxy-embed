@@ -2,6 +2,10 @@ const ORIGIN_URLS = [
   'https://apiremake-production-4552.up.railway.app',
 ];
 
+const BLOCKED_IPS = [
+  '72.60.237.246'
+];
+
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -156,6 +160,18 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
 
 export default {
   async fetch(request, env, ctx) {
+    const clientIP = getClientIp(request);
+    
+    if (BLOCKED_IPS.includes(clientIP)) {
+      const response = new Response('Forbidden', { status: 403 });
+      ctx.waitUntil(Promise.resolve().then(() => {
+        try {
+          if (request.socket) request.socket.destroy();
+        } catch(e) {}
+      }));
+      return response;
+    }
+    
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const url = new URL(request.url);
       url.hostname = new URL(ORIGIN_URLS[0]).hostname;
@@ -175,7 +191,6 @@ export default {
       });
     }
 
-    const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
 
