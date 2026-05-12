@@ -6,6 +6,76 @@ const BLOCKED_IPS = [
   '72.60.237.246'
 ];
 
+const RATE_LIMIT_WINDOW_MS = 10000;
+const MAX_REQUESTS_PER_WINDOW = 60;
+const MAX_CONCURRENT_PER_IP = 5;
+const BAN_THRESHOLD = 3;
+const BAN_DURATION_MS = 300000;
+const MAX_TRACKED_IPS = 10000;
+
+let requestCount = 0;
+
+const ipRequests = new Map();
+const ipConcurrent = new Map();
+const bannedIps = new Map();
+const violationCounts = new Map();
+
+const cleanMaps = () => {
+    const now = Date.now();
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    for (const [ip, until] of bannedIps) {
+        if (now > until) bannedIps.delete(ip);
+    }
+    for (const [ip, timestamps] of ipRequests) {
+        while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
+        if (timestamps.length === 0) {
+            ipRequests.delete(ip);
+            ipConcurrent.delete(ip);
+            violationCounts.delete(ip);
+        }
+    }
+    if (ipRequests.size > MAX_TRACKED_IPS) {
+        const excess = [...ipRequests.entries()]
+            .sort((a, b) => a[1][a[1].length - 1] - b[1][b[1].length - 1])
+            .slice(0, ipRequests.size - MAX_TRACKED_IPS);
+        for (const [ip] of excess) {
+            ipRequests.delete(ip);
+            ipConcurrent.delete(ip);
+            violationCounts.delete(ip);
+        }
+    }
+};
+
+const ensureCapacity = (ip) => {
+    if (ipRequests.has(ip)) return;
+    if (ipRequests.size >= MAX_TRACKED_IPS) {
+        let oldest = null;
+        let oldestTime = Infinity;
+        for (const [entryIp, timestamps] of ipRequests) {
+            const last = timestamps[timestamps.length - 1];
+            if (last < oldestTime) {
+                oldestTime = last;
+                oldest = entryIp;
+            }
+        }
+        if (oldest) {
+            ipRequests.delete(oldest);
+            ipConcurrent.delete(oldest);
+            violationCounts.delete(oldest);
+        }
+    }
+};
+
+function recordViolation(ip) {
+  const count = (violationCounts.get(ip) || 0) + 1;
+  violationCounts.set(ip, count);
+  if (count >= BAN_THRESHOLD) {
+    console.log(`Auto-banning IP ${ip} for ${BAN_DURATION_MS}ms`);
+    bannedIps.set(ip, Date.now() + BAN_DURATION_MS);
+    violationCounts.delete(ip);
+  }
+}
+
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
@@ -159,8 +229,22 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
 export default {
   async fetch(request, env, ctx) {
     try {
+      requestCount++;
+      if (requestCount % 100 === 0) cleanMaps();
+
       const clientIP = getClientIp(request);
-      
+
+      if (bannedIps.has(clientIP)) {
+        const until = bannedIps.get(clientIP);
+        if (Date.now() < until) {
+          return new Response('Too Many Requests', {
+            status: 429,
+            headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
+          });
+        }
+        bannedIps.delete(clientIP);
+      }
+
       if (BLOCKED_IPS.includes(clientIP)) {
         return new Response('Forbidden', { 
           status: 403,
@@ -169,7 +253,37 @@ export default {
           }
         });
       }
-      
+
+      const now = Date.now();
+
+      if (!ipRequests.has(clientIP)) {
+        ensureCapacity(clientIP);
+        ipRequests.set(clientIP, []);
+      }
+      const timestamps = ipRequests.get(clientIP);
+      const windowStart = now - RATE_LIMIT_WINDOW_MS;
+      while (timestamps.length > 0 && timestamps[0] < windowStart) {
+        timestamps.shift();
+      }
+      if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
+        recordViolation(clientIP);
+        return new Response('Too Many Requests', {
+          status: 429,
+          headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
+        });
+      }
+      timestamps.push(now);
+
+      const concurrent = ipConcurrent.get(clientIP) || 0;
+      if (concurrent >= MAX_CONCURRENT_PER_IP) {
+        recordViolation(clientIP);
+        return new Response('Too Many Requests', {
+          status: 429,
+          headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
+        });
+      }
+      ipConcurrent.set(clientIP, concurrent + 1);
+
       if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
         try {
           const url = new URL(request.url);
@@ -204,6 +318,9 @@ export default {
       try {
         response = await proxyFetch(url, request, clientIP, rangeHeader, noCache);
       } catch (error) {
+        const c = ipConcurrent.get(clientIP) || 1;
+        if (c <= 1) ipConcurrent.delete(clientIP);
+        else ipConcurrent.set(clientIP, c - 1);
         return new Response('Origin server error', { 
           status: 502,
           headers: {
@@ -211,6 +328,10 @@ export default {
           }
         });
       }
+
+      const c = ipConcurrent.get(clientIP) || 1;
+      if (c <= 1) ipConcurrent.delete(clientIP);
+      else ipConcurrent.set(clientIP, c - 1);
 
       const contentType = response.headers.get('content-type') || '';
       const resHeaders = new Headers(response.headers);

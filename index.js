@@ -33,6 +33,7 @@ if (proxyUrls.length === 0) {
     }
 }
 
+// .
 if (proxyUrls.length === 0) {
     proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
     console.log("Using default proxy");
@@ -49,6 +50,86 @@ if (process.env.BLOCKED_IPS) {
 }
 
 let currentProxyIndex = 0;
+
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 10000;
+const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 60;
+const MAX_CONCURRENT_PER_IP = parseInt(process.env.MAX_CONCURRENT_PER_IP) || 5;
+const BAN_THRESHOLD = parseInt(process.env.BAN_THRESHOLD) || 3;
+const BAN_DURATION_MS = parseInt(process.env.BAN_DURATION_MS) || 300000;
+const MAX_TRACKED_IPS = parseInt(process.env.MAX_TRACKED_IPS) || 10000;
+
+const ipRequests = new Map();
+const ipConcurrent = new Map();
+const bannedIps = new Map();
+const violationCounts = new Map();
+
+const recordViolation = (ip) => {
+    const count = (violationCounts.get(ip) || 0) + 1;
+    violationCounts.set(ip, count);
+    if (count >= BAN_THRESHOLD) {
+        console.log(`Auto-banning IP ${ip} for ${BAN_DURATION_MS}ms`);
+        bannedIps.set(ip, Date.now() + BAN_DURATION_MS);
+        violationCounts.delete(ip);
+    }
+};
+
+const isBanned = (ip) => {
+    if (!bannedIps.has(ip)) return false;
+    const until = bannedIps.get(ip);
+    if (Date.now() > until) {
+        bannedIps.delete(ip);
+        return false;
+    }
+    return true;
+};
+
+const cleanMaps = () => {
+    const now = Date.now();
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    for (const [ip, until] of bannedIps) {
+        if (now > until) bannedIps.delete(ip);
+    }
+    for (const [ip, timestamps] of ipRequests) {
+        while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
+        if (timestamps.length === 0) {
+            ipRequests.delete(ip);
+            ipConcurrent.delete(ip);
+            violationCounts.delete(ip);
+        }
+    }
+    if (ipRequests.size > MAX_TRACKED_IPS) {
+        const excess = [...ipRequests.entries()]
+            .sort((a, b) => a[1][a[1].length - 1] - b[1][b[1].length - 1])
+            .slice(0, ipRequests.size - MAX_TRACKED_IPS);
+        for (const [ip] of excess) {
+            ipRequests.delete(ip);
+            ipConcurrent.delete(ip);
+            violationCounts.delete(ip);
+        }
+    }
+};
+
+setInterval(cleanMaps, 15000);
+
+const ensureCapacity = (ip) => {
+    if (ipRequests.has(ip)) return;
+    if (ipRequests.size >= MAX_TRACKED_IPS) {
+        let oldest = null;
+        let oldestTime = Infinity;
+        for (const [entryIp, timestamps] of ipRequests) {
+            const last = timestamps[timestamps.length - 1];
+            if (last < oldestTime) {
+                oldestTime = last;
+                oldest = entryIp;
+            }
+        }
+        if (oldest) {
+            ipRequests.delete(oldest);
+            ipConcurrent.delete(oldest);
+            violationCounts.delete(oldest);
+        }
+    }
+};
 
 const app = express();
 
@@ -107,11 +188,50 @@ const getClientIp = (req) => {
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
 
+    if (isBanned(req.clientIp)) {
+        console.log(`Banned IP ${req.clientIp} auto-blocked`);
+        req.socket.destroy();
+        return;
+    }
+
     if (blockedIps.includes(req.clientIp)) {
         console.log(`Blocked request from IP: ${req.clientIp}`);
         req.socket.destroy();
         return;
     }
+
+    const now = Date.now();
+
+    if (!ipRequests.has(req.clientIp)) {
+        ensureCapacity(req.clientIp);
+        ipRequests.set(req.clientIp, []);
+    }
+    const timestamps = ipRequests.get(req.clientIp);
+    const windowStart = now - RATE_LIMIT_WINDOW_MS;
+    while (timestamps.length > 0 && timestamps[0] < windowStart) {
+        timestamps.shift();
+    }
+    if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
+        console.log(`Rate limit exceeded for ${req.clientIp}`);
+        recordViolation(req.clientIp);
+        req.socket.destroy();
+        return;
+    }
+    timestamps.push(now);
+
+    const concurrent = ipConcurrent.get(req.clientIp) || 0;
+    if (concurrent >= MAX_CONCURRENT_PER_IP) {
+        console.log(`Concurrent limit exceeded for ${req.clientIp}`);
+        recordViolation(req.clientIp);
+        req.socket.destroy();
+        return;
+    }
+    ipConcurrent.set(req.clientIp, concurrent + 1);
+    res.on('finish', () => {
+        const c = ipConcurrent.get(req.clientIp) || 1;
+        if (c <= 1) ipConcurrent.delete(req.clientIp);
+        else ipConcurrent.set(req.clientIp, c - 1);
+    });
 
     next();
 });
