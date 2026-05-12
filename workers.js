@@ -69,22 +69,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader) {
       responseContentType.includes('text/event-stream')) {
     return 0;
   }
-  
-  if (responseContentType.includes('text/html') || 
-      responseContentType.includes('application/xhtml+xml')) {
-    return 3600;
-  }
-  
-  if (responseContentType.includes('text/css') ||
-      responseContentType.includes('application/javascript') ||
-      responseContentType.includes('text/javascript') ||
-      responseContentType.includes('application/x-javascript') ||
-      responseContentType.includes('text/plain') ||
-      responseContentType.includes('text/xml') ||
-      responseContentType.includes('application/xml')) {
-    return 43200;
-  }
-  
+ 
   if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
     return 0;
   }
@@ -193,11 +178,10 @@ export default {
     const clientIP = getClientIp(request);
     const url = new URL(request.url);
     const rangeHeader = request.headers.get('range');
-    const isPlayerPath = url.pathname === '/player';
 
     let response;
     try {
-      response = await proxyFetch(url, request, clientIP, rangeHeader, isPlayerPath);
+      response = await proxyFetch(url, request, clientIP, rangeHeader);
     } catch (error) {
       return new Response('Origin server error', { status: 502 });
     }
@@ -219,11 +203,9 @@ export default {
     resHeaders.set('Access-Control-Expose-Headers', '*');
 
     const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader);
-    const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206 || response.status === 404);
+    const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
 
-    if (isPlayerPath) {
-      resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    } else if (shouldCache) {
+   if (shouldCache) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${cacheTtl/2}`);
       resHeaders.set('CF-Cache-Status', 'MISS');
       resHeaders.set('X-Cache', 'MISS');
