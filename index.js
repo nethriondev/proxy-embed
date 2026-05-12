@@ -313,7 +313,7 @@ app.use(
             }
         },
         onProxyRes: (proxyRes, req, res) => {
-            if (proxyRes.headers['x-is-internal']) {
+            if (proxyRes.headers['x-is-internal'] === 'true') {
                 trustedIps.add(req.clientIp);
             }
 

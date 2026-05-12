@@ -270,7 +270,7 @@ async function proxyRequestToOrigin(request, clientIP) {
     });
   }
 
-  if (response.headers.get('x-is-internal')) {
+  if (response.headers.get('x-is-internal') === 'true') {
     trustedIps.add(clientIP);
   }
 
