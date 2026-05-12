@@ -3,12 +3,16 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 const fs = require("fs");
 
 let proxyUrls = [];
+let blockedIps = ['72.60.237.246'];
 
 try {
     const configPath = "./proxy-config.json";
     if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
         proxyUrls = config.proxyUrls;
+        if (config.blockedIps) {
+            blockedIps = config.blockedIps;
+        }
     }
 } catch (err) {
     console.log("No proxy-config.json found, checking env...");
@@ -32,6 +36,16 @@ if (proxyUrls.length === 0) {
 if (proxyUrls.length === 0) {
     proxyUrls = ["https://proxy-embed.nethriondev.workers.dev"];
     console.log("Using default proxy");
+}
+
+if (process.env.BLOCKED_IPS) {
+    try {
+        const envBlocked = JSON.parse(process.env.BLOCKED_IPS);
+        blockedIps.push(...envBlocked);
+        console.log(`Loaded ${envBlocked.length} blocked IPs from environment`);
+    } catch (err) {
+        console.error("Error parsing BLOCKED_IPS env var, using defaults");
+    }
 }
 
 let currentProxyIndex = 0;
@@ -92,6 +106,13 @@ const getClientIp = (req) => {
 
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
+
+    if (blockedIps.includes(req.clientIp)) {
+        console.log(`Blocked request from IP: ${req.clientIp}`);
+        req.socket.destroy();
+        return;
+    }
+
     next();
 });
 
