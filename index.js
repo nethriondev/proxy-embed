@@ -287,6 +287,7 @@ app.use(
         onProxyReq: (proxyReq, req) => {
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
+            proxyReq.setHeader("x-is-internal", "true");
 
             if (req.headers['user-agent']) {
                 proxyReq.setHeader("User-Agent", req.headers['user-agent']);
