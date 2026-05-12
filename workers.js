@@ -19,6 +19,7 @@ const ipRequests = new Map();
 const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
+const trustedIps = new Set();
 
 const cleanMaps = () => {
     const now = Date.now();
@@ -226,6 +227,85 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
   throw lastError || new Error('All origins failed');
 }
 
+async function proxyRequestToOrigin(request, clientIP) {
+  if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    try {
+      const url = new URL(request.url);
+      url.hostname = new URL(ORIGIN_URLS[0]).hostname;
+      url.protocol = 'https:';
+      url.port = '443';
+      return fetch(url.toString(), request);
+    } catch (error) {
+      return new Response('WebSocket upgrade failed', { status: 502 });
+    }
+  }
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Accept, X-Stream, Range",
+        "Access-Control-Max-Age": "86400",
+      }
+    });
+  }
+
+  const url = new URL(request.url);
+  const rangeHeader = request.headers.get('range');
+  
+  const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
+                  request.headers.get('pragma') === 'no-cache';
+
+  let response;
+  try {
+    response = await proxyFetch(url, request, clientIP, rangeHeader, noCache);
+  } catch (error) {
+    return new Response('Origin server error', {
+      status: 502,
+      headers: {
+        'Content-Type': 'text/plain'
+      }
+    });
+  }
+
+  if (response.headers.get('x-is-internal')) {
+    trustedIps.add(clientIP);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const resHeaders = new Headers(response.headers);
+
+  if (response.status === 206) {
+    const contentRange = response.headers.get('content-range');
+    if (contentRange) {
+      resHeaders.set('content-range', contentRange);
+    }
+    resHeaders.set('accept-ranges', 'bytes');
+  }
+
+  resHeaders.set('Access-Control-Allow-Origin', '*');
+  resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
+  resHeaders.set('Access-Control-Expose-Headers', '*');
+
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status);
+  const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
+
+  if (shouldCache) {
+    resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
+    resHeaders.set('CF-Cache-Status', 'MISS');
+    resHeaders.set('X-Cache', 'MISS');
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: resHeaders
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -233,6 +313,10 @@ export default {
       if (requestCount % 100 === 0) cleanMaps();
 
       const clientIP = getClientIp(request);
+
+      if (trustedIps.has(clientIP)) {
+        return await proxyRequestToOrigin(request, clientIP);
+      }
 
       if (bannedIps.has(clientIP)) {
         const until = bannedIps.get(clientIP);
@@ -284,85 +368,13 @@ export default {
       }
       ipConcurrent.set(clientIP, concurrent + 1);
 
-      if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-        try {
-          const url = new URL(request.url);
-          url.hostname = new URL(ORIGIN_URLS[0]).hostname;
-          url.protocol = 'https:';
-          url.port = '443';
-          return fetch(url.toString(), request);
-        } catch (error) {
-          return new Response('WebSocket upgrade failed', { status: 502 });
-        }
-      }
-
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          status: 204,
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Accept, X-Stream, Range",
-            "Access-Control-Max-Age": "86400",
-          }
-        });
-      }
-
-      const url = new URL(request.url);
-      const rangeHeader = request.headers.get('range');
-      
-      const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
-                      request.headers.get('pragma') === 'no-cache';
-
-      let response;
-      try {
-        response = await proxyFetch(url, request, clientIP, rangeHeader, noCache);
-      } catch (error) {
-        const c = ipConcurrent.get(clientIP) || 1;
-        if (c <= 1) ipConcurrent.delete(clientIP);
-        else ipConcurrent.set(clientIP, c - 1);
-        return new Response('Origin server error', { 
-          status: 502,
-          headers: {
-            'Content-Type': 'text/plain'
-          }
-        });
-      }
+      const result = await proxyRequestToOrigin(request, clientIP);
 
       const c = ipConcurrent.get(clientIP) || 1;
       if (c <= 1) ipConcurrent.delete(clientIP);
       else ipConcurrent.set(clientIP, c - 1);
 
-      const contentType = response.headers.get('content-type') || '';
-      const resHeaders = new Headers(response.headers);
-
-      if (response.status === 206) {
-        const contentRange = response.headers.get('content-range');
-        if (contentRange) {
-          resHeaders.set('content-range', contentRange);
-        }
-        resHeaders.set('accept-ranges', 'bytes');
-      }
-
-      resHeaders.set('Access-Control-Allow-Origin', '*');
-      resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
-      resHeaders.set('Access-Control-Expose-Headers', '*');
-
-      const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status);
-      const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
-
-      if (shouldCache) {
-        resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
-        resHeaders.set('CF-Cache-Status', 'MISS');
-        resHeaders.set('X-Cache', 'MISS');
-      }
-
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: resHeaders
-      });
+      return result;
     } catch (error) {
       return new Response('Internal Server Error', { 
         status: 500,
