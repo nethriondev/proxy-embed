@@ -6,6 +6,8 @@ const BLOCKED_IPS = [
   '72.60.237.246'
 ];
 
+const INTERNAL_PROXY_IPS = ["162.220.234.134"];
+
 const RATE_LIMIT_WINDOW_MS = 10000;
 const MAX_REQUESTS_PER_WINDOW = 500;
 const MAX_CONCURRENT_PER_IP = 5;
@@ -20,6 +22,7 @@ const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
 const trustedIps = new Set();
+const internalProxyIps = new Set(INTERNAL_PROXY_IPS);
 
 const cleanMaps = () => {
     const now = Date.now();
@@ -314,7 +317,7 @@ export default {
 
       const clientIP = getClientIp(request);
 
-      if (trustedIps.has(clientIP) || request.headers.get('x-is-internal') === 'true') {
+      if (trustedIps.has(clientIP) || internalProxyIps.has(clientIP)) {
         return await proxyRequestToOrigin(request, clientIP);
       }
 

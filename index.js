@@ -4,6 +4,7 @@ const fs = require("fs");
 
 let proxyUrls = [];
 let blockedIps = ['72.60.237.246'];
+let internalProxyIps = ["162.220.234.134"];
 
 try {
     const configPath = "./proxy-config.json";
@@ -12,6 +13,9 @@ try {
         proxyUrls = config.proxyUrls;
         if (config.blockedIps) {
             blockedIps = config.blockedIps;
+        }
+        if (config.internalProxyIps) {
+            internalProxyIps = config.internalProxyIps;
         }
     }
 } catch (err) {
@@ -47,6 +51,18 @@ if (process.env.BLOCKED_IPS) {
         console.error("Error parsing BLOCKED_IPS env var, using defaults");
     }
 }
+
+if (process.env.INTERNAL_PROXY_IPS) {
+    try {
+        const envInternal = JSON.parse(process.env.INTERNAL_PROXY_IPS);
+        internalProxyIps.push(...envInternal);
+        console.log(`Loaded ${envInternal.length} internal proxy IPs from environment`);
+    } catch (err) {
+        console.error("Error parsing INTERNAL_PROXY_IPS env var");
+    }
+}
+
+const internalProxyIpSet = new Set(internalProxyIps);
 
 let currentProxyIndex = 0;
 
@@ -188,7 +204,7 @@ const getClientIp = (req) => {
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
 
-    if (trustedIps.has(req.clientIp) || req.headers['x-is-internal'] === 'true') {
+    if (trustedIps.has(req.clientIp) || internalProxyIpSet.has(req.clientIp)) {
         next();
         return;
     }
