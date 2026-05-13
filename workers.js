@@ -81,6 +81,11 @@ function recordViolation(ip) {
 }
 
 const getClientIp = (request) => {
+  const clientIpHeader = request.headers.get('x-client-ip');
+  if (clientIpHeader) {
+    return clientIpHeader;
+  }
+
   const forwardedHeader = request.headers.get('forwarded');
   if (forwardedHeader) {
     const forMatch = forwardedHeader.match(/for=([^;]+)/);

@@ -292,6 +292,7 @@ app.use(
         changeOrigin: true,
         pathRewrite: { "^/": "" },
         onProxyReq: (proxyReq, req) => {
+            proxyReq.setHeader("X-Client-IP", req.clientIp);
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
             if (proxyReq.headers['x-is-internal'] === 'true') {
