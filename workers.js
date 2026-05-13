@@ -273,7 +273,7 @@ async function proxyRequestToOrigin(request, clientIP) {
     });
   }
 
-  if (response.headers.get('x-is-internal') === 'true') {
+  if (request.headers.get('x-is-internal') === 'true') {
     trustedIps.add(clientIP);
   }
 
