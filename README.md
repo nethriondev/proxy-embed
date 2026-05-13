@@ -1,131 +1,113 @@
 # Proxy Embed
 
-A reverse proxy with advanced load balancing, automatic failover, and health monitoring for multiple backend URLs.
+A dual-deployment reverse proxy — runs as an **Express server** (Node.js/Vercel) or a **Cloudflare Worker**. Forwards HTTP requests to a configurable backend URL with rate limiting, IP filtering, proxy rotation/failover, and intelligent caching (Workers).
 
-## Benefits
+## Architecture
 
-### Security
-- **Hides your real backend** - Attackers cannot directly target your origin server
-- **Reduces attack surface** - Only the proxy is exposed, not your infrastructure
-- **Easy to rotate** - Change proxy URLs instantly without touching your backend
-- **Leverages platform security** - Cloudflare Workers and Vercel include built-in DDoS protection
+```
+index.js  (process manager - spawns proxy.js with auto-restart)
+  └── proxy.js  (Express reverse proxy - runs on Node.js/Vercel)
 
-### Reliability
-- **Auto failover** - If primary proxy dies, automatically switches to backups without downtime
-- **Active health checks** - Monitors server health and marks unhealthy servers automatically
-- **Auto retry** - Automatically retries failed requests on the next available server
-- **Server recovery** - Automatically brings servers back online when they recover
-- **Preserves client IP** - Forwards original IP addresses to your backend
-- **Streaming support** - Handles live streams and event-source responses with optimized headers
+workers.js  (Cloudflare Workers - edge-deployed standalone)
+```
 
-### Performance
-- **7 load balancing algorithms** - Choose the best strategy for your workload
-- **Weighted routing** - Distribute traffic based on server capacity
-- **Response time tracking** - Route to fastest responding servers
-- **Connection tracking** - Balances active connections across servers
+Both `proxy.js` and `workers.js` implement the same core logic independently.
 
-### Compatibility
-- **CORS ready** - Works out of the box with any frontend
-- **Deploy anywhere** - Works on Vercel, Railway, or any Node.js host
-- **Multi-platform IP detection** - Supports Cloudflare, Vercel, and standard proxies
+## How It Works
 
-## Setup Options
+1. **index.js** spawns `proxy.js` as a child process. If the `PID` env var is set to anything other than `"0"`, it auto-restarts the process on crash.
+2. **proxy.js** runs an Express server that:
+   - Reads proxy targets from `proxy-config.json`, `PROXY_URL`, or `PROXY_URLS` env
+   - Detects client IP via `x-forwarded-for`, `cf-connecting-ip`, `x-real-ip`, and other headers
+   - Enforces per-IP rate limiting (configurable window & max requests)
+   - Limits concurrent connections per IP
+   - Blocks specific IPs (static blocklist) and auto-bans IPs after repeated violations
+   - Rotates through proxy URLs on error (failover)
+   - Forwards original client IP to backend via headers
+   - Sets CORS headers on all responses
+3. **workers.js** does the same at the edge with Cloudflare Workers, plus:
+   - Multi-origin failover (tries each origin URL in sequence)
+   - Intelligent caching: different TTLs per content type (HLS/DASH segments: 12h, images/video/audio: 12h, HTML: 1h, API/JSON/streams: no cache)
+   - Range request support for media streaming
+   - WebSocket pass-through
 
-### Configuration Files
+## Setup
 
-Create `proxy-config.json` for static proxy URL configuration:
+### Node.js / Vercel
+
+```bash
+npm install
+npm start
+```
+
+Set proxy targets via `proxy-config.json`:
 ```json
 {
-    "proxyUrls": [
-        "https://proxy1.workers.dev",
-        "https://proxy2.workers.dev",
-        "https://proxy3.workers.dev"
-    ]
+    "proxyUrls": ["https://your-backend.com"],
+    "blockedIps": ["1.2.3.4"],
+    "internalProxyIps": ["5.6.7.8"]
 }
 ```
+
+Or via environment variables:
+```bash
+PROXY_URL=https://your-backend.com npm start
+PROXY_URLS='["https://backup1.com","https://backup2.com"]' npm start
+```
+
+### Cloudflare Workers
+
+Deploy `workers.js` via `wrangler`:
+```bash
+npx wrangler deploy
+```
+
+Edit `ORIGIN_URLS` array in `workers.js` to set backend targets.
+
+## Configuration
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PROXY_URL` | Single proxy URL | - |
-| `PROXY_URLS` | JSON array of proxy URLs | - |
-| `PROXY_WEIGHTS` | Comma-separated url:weight pairs | - |
-| `LB_ALGORITHM` | Load balancing algorithm | `round-robin` |
-| `HEALTH_CHECK_INTERVAL` | Health check interval (ms) | `30000` |
-| `HEALTH_CHECK_TIMEOUT` | Health check timeout (ms) | `5000` |
-| `FAILURE_THRESHOLD` | Failures before marking unhealthy | `3` |
+| `PROXY_URL` | Single proxy target URL | — |
+| `PROXY_URLS` | JSON array of proxy target URLs | — |
+| `BLOCKED_IPS` | JSON array of IPs to block | `["72.60.237.246"]` |
+| `INTERNAL_PROXY_IPS` | JSON array of trusted proxy IPs (bypass rate limits) | `["162.220.234.134"]` |
+| `PORT` | Server port | `3000` |
+| `RATE_LIMIT_WINDOW_MS` | Rate limit time window | `10000` (10s) |
+| `MAX_REQUESTS_PER_WINDOW` | Max requests per window per IP | `500` |
+| `MAX_CONCURRENT_PER_IP` | Max concurrent connections per IP | `100` |
+| `BAN_THRESHOLD` | Violations before auto-ban | `3` |
+| `BAN_DURATION_MS` | Auto-ban duration | `300000` (5min) |
+| `MAX_TRACKED_IPS` | Max tracked IPs in memory | `10000` |
+| `PID` | Set to `"0"` to disable auto-restart | — |
 
-### Load Balancing Algorithms
+### Priority
 
-Choose the best algorithm for your use case:
+`proxy-config.json` > `PROXY_URL`/`PROXY_URLS` env > default (`https://proxy-embed.nethriondev.workers.dev`)
 
-| Algorithm | Description |
-|-----------|-------------|
-| `round-robin` | Cycles through servers sequentially (default) |
-| `least-connections` | Routes to server with fewest active connections |
-| `weighted-round-robin` | Distributes based on server weights |
-| `weighted-least-connections` | Balances connections relative to weight |
-| `ip-hash` | Consistent routing by client IP |
-| `least-response-time` | Routes to fastest responding server |
-| `random` | Random server selection |
+## Rate Limiting & IP Blocking
 
-Example weighted configuration:
-```bash
-PROXY_URLS='["https://proxy1.workers.dev","https://proxy2.workers.dev"]'
-PROXY_WEIGHTS="https://proxy1.workers.dev:3,https://proxy2.workers.dev:1"
-```
+- Each IP is tracked for request frequency and concurrent connections
+- Violations accumulate; after `BAN_THRESHOLD` violations, the IP is auto-banned for `BAN_DURATION_MS`
+- Expired bans and stale tracking data are cleaned every 15 seconds
+- Trusted/internal proxy IPs bypass all rate limiting and blocking
 
-Priority: JSON file → Environment variable → Default
+## Streaming & CORS
 
-## Screenshots
-### Before:
-![Before](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/before.jpg)
+- All responses get `access-control-allow-origin: *`
+- Streaming responses (`text/event-stream`, `application/stream+json`, or `x-stream: true` header) get optimized headers (`no-cache`, `no-transform`, no `content-length`)
+- CORS preflight (`OPTIONS`) is handled with wildcard allow
 
-### After:
-![After](https://raw.githubusercontent.com/nethriondev/proxy-embed/main/screenshots/after.jpg)
+## Proxy Rotation & Failover
 
-## Quick Start
+When a proxy URL errors (ECONNREFUSED, ETIMEDOUT, etc.), the server rotates to the next URL in the list. With only one URL configured, rotation is disabled and the error is returned directly.
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Create `proxy-config.json` or set `PROXY_URLS` environment variable
-3. Run:
-   ```bash
-   npm start
-   ```
+## Deployments
 
-### Monitoring Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health status with server statistics |
-| `GET /lb-stats` | Detailed load balancer statistics |
-
-Example response from `/lb-stats`:
-```json
-{
-  "algorithm": "round-robin",
-  "healthyServers": 2,
-  "totalServers": 3,
-  "healthCheckInterval": 30000,
-  "servers": [
-    {
-      "url": "https://proxy1.workers.dev",
-      "healthy": true,
-      "connections": 5,
-      "totalRequests": 1000,
-      "successRate": "99.50%",
-      "responseTime": "45.23ms",
-      "weight": 1,
-      "failures": 1
-    }
-  ]
-}
-```
-
-### How Failover Works
-
-When a request fails, the proxy automatically retries on the next healthy server. Health checks run every 30 seconds (configurable) and unhealthy servers are automatically marked down. When a server recovers, it's automatically brought back online.
+| Platform | Entry | Config |
+|----------|-------|--------|
+| Node.js / Railway | `index.js` | `proxy-config.json` or env vars |
+| Vercel | `index.js` (serverless) | `vercel.json` |
+| Cloudflare Workers | `workers.js` | `wrangler.toml` / edit `ORIGIN_URLS` |
