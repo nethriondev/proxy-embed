@@ -333,10 +333,6 @@ app.use(
             }
         },
         onProxyRes: (proxyRes, req, res) => {
-            if (proxyRes.headers['x-is-internal'] === 'true') {
-                trustedIps.add(req.clientIp);
-            }
-
             proxyRes.headers['access-control-allow-origin'] = '*';
             proxyRes.headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
             proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream';
