@@ -348,19 +348,23 @@ app.use(
             }
         },
         onError: (err, req, res) => {
-            console.error(`Proxy error for ${currentProxy}:`, err.message);
+            const statusCode = err.code === 'ECONNREFUSED' ? 502 :
+                               err.code === 'ETIMEDOUT' ? 504 : 502;
+            console.error(`Proxy error for ${currentProxy}:`, err.message, `(code: ${err.code || 'N/A'})`);
             
             if (proxyUrls.length > 1) {
                 tryNextProxy();
-                res.status(500).json({
+                res.status(statusCode).json({
                     error: "Proxy Error",
                     message: err.message,
+                    code: err.code || null,
                     nextProxy: currentProxy
                 });
             } else {
-                res.status(500).json({
+                res.status(statusCode).json({
                     error: "Proxy Error",
                     message: err.message,
+                    code: err.code || null,
                     note: "Only one proxy configured"
                 });
             }

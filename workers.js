@@ -227,7 +227,11 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
       if (response.ok || response.status === 206) {
         return response;
       }
-      
+
+      if (response.status < 500) {
+        return response;
+      }
+
       lastError = new Error(`Origin ${originUrl} returned status ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -272,7 +276,7 @@ async function proxyRequestToOrigin(request, clientIP) {
   try {
     response = await proxyFetch(url, request, clientIP, rangeHeader, noCache);
   } catch (error) {
-    return new Response('Origin server error', {
+    return new Response(error.message || 'Origin server error', {
       status: 502,
       headers: {
         'Content-Type': 'text/plain'
