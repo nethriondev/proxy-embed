@@ -288,9 +288,9 @@ app.use(
             proxyReq.setHeader("X-Client-IP", req.clientIp);
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
-            if (proxyReq.headers['x-is-internal'] === 'true') {
+            if (proxyReq.headers['x-is-internal']) {
                 trustedIps.add(req.clientIp);
-                proxyReq.setHeader("x-is-internal", "true");
+                proxyReq.setHeader("x-is-internal", req.headers['x-is-internal']);
             }
 
             if (req.headers['user-agent']) {
