@@ -10,7 +10,6 @@ const INTERNAL_PROXY_IPS = ["162.220.234.134"];
 
 const RATE_LIMIT_WINDOW_MS = 10000;
 const MAX_REQUESTS_PER_WINDOW = 500;
-const MAX_CONCURRENT_PER_IP = 100;
 const BAN_THRESHOLD = 3;
 const BAN_DURATION_MS = 300000;
 const MAX_TRACKED_IPS = 10000;
@@ -18,7 +17,6 @@ const MAX_TRACKED_IPS = 10000;
 let requestCount = 0;
 
 const ipRequests = new Map();
-const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
 const trustedIps = new Set();
@@ -34,7 +32,6 @@ const cleanMaps = () => {
         while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
         if (timestamps.length === 0) {
             ipRequests.delete(ip);
-            ipConcurrent.delete(ip);
             violationCounts.delete(ip);
         }
     }
@@ -44,7 +41,6 @@ const cleanMaps = () => {
             .slice(0, ipRequests.size - MAX_TRACKED_IPS);
         for (const [ip] of excess) {
             ipRequests.delete(ip);
-            ipConcurrent.delete(ip);
             violationCounts.delete(ip);
         }
     }
@@ -64,7 +60,6 @@ const ensureCapacity = (ip) => {
         }
         if (oldest) {
             ipRequests.delete(oldest);
-            ipConcurrent.delete(oldest);
             violationCounts.delete(oldest);
         }
     }
@@ -373,21 +368,7 @@ export default {
       }
       timestamps.push(now);
 
-      const concurrent = ipConcurrent.get(clientIP) || 0;
-      if (concurrent >= MAX_CONCURRENT_PER_IP) {
-        recordViolation(clientIP);
-        return new Response('Too Many Requests', {
-          status: 429,
-          headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
-        });
-      }
-      ipConcurrent.set(clientIP, concurrent + 1);
-
       const result = await proxyRequestToOrigin(request, clientIP);
-
-      const c = ipConcurrent.get(clientIP) || 1;
-      if (c <= 1) ipConcurrent.delete(clientIP);
-      else ipConcurrent.set(clientIP, c - 1);
 
       return result;
     } catch (error) {

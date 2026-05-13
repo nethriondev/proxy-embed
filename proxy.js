@@ -68,13 +68,11 @@ let currentProxyIndex = 0;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 10000;
 const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 500;
-const MAX_CONCURRENT_PER_IP = parseInt(process.env.MAX_CONCURRENT_PER_IP) || 100;
 const BAN_THRESHOLD = parseInt(process.env.BAN_THRESHOLD) || 3;
 const BAN_DURATION_MS = parseInt(process.env.BAN_DURATION_MS) || 300000;
 const MAX_TRACKED_IPS = parseInt(process.env.MAX_TRACKED_IPS) || 10000;
 
 const ipRequests = new Map();
-const ipConcurrent = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
 const trustedIps = new Set();
@@ -109,7 +107,6 @@ const cleanMaps = () => {
         while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
         if (timestamps.length === 0) {
             ipRequests.delete(ip);
-            ipConcurrent.delete(ip);
             violationCounts.delete(ip);
         }
     }
@@ -119,7 +116,6 @@ const cleanMaps = () => {
             .slice(0, ipRequests.size - MAX_TRACKED_IPS);
         for (const [ip] of excess) {
             ipRequests.delete(ip);
-            ipConcurrent.delete(ip);
             violationCounts.delete(ip);
         }
     }
@@ -141,7 +137,6 @@ const ensureCapacity = (ip) => {
         }
         if (oldest) {
             ipRequests.delete(oldest);
-            ipConcurrent.delete(oldest);
             violationCounts.delete(oldest);
         }
     }
@@ -239,21 +234,6 @@ app.use((req, res, next) => {
         return;
     }
     timestamps.push(now);
-
-    const concurrent = ipConcurrent.get(req.clientIp) || 0;
-    if (concurrent >= MAX_CONCURRENT_PER_IP) {
-        console.log(`Concurrent limit exceeded for ${req.clientIp}`);
-        recordViolation(req.clientIp);
-        req.socket.destroy();
-        return;
-    }
-    ipConcurrent.set(req.clientIp, concurrent + 1);
-    res.on('finish', () => {
-        const c = ipConcurrent.get(req.clientIp) || 1;
-        if (c <= 1) ipConcurrent.delete(req.clientIp);
-        else ipConcurrent.set(req.clientIp, c - 1);
-    });
-
     next();
 });
 

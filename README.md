@@ -77,7 +77,6 @@ Edit `ORIGIN_URLS` array in `workers.js` to set backend targets.
 | `PORT` | Server port | `3000` |
 | `RATE_LIMIT_WINDOW_MS` | Rate limit time window | `10000` (10s) |
 | `MAX_REQUESTS_PER_WINDOW` | Max requests per window per IP | `500` |
-| `MAX_CONCURRENT_PER_IP` | Max concurrent connections per IP | `100` |
 | `BAN_THRESHOLD` | Violations before auto-ban | `3` |
 | `BAN_DURATION_MS` | Auto-ban duration | `300000` (5min) |
 | `MAX_TRACKED_IPS` | Max tracked IPs in memory | `10000` |
