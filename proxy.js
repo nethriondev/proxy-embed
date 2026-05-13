@@ -1,7 +1,6 @@
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const fs = require("fs");
-const serverless = require("serverless-http");
 
 let proxyUrls = [];
 let blockedIps = ['72.60.237.246'];
@@ -382,14 +381,10 @@ app.options("*", (req, res) => {
     res.sendStatus(200);
 });
 
-if (require.main === module) {
-    const port = process.env.PORT || 3000;
-    app.listen(port, () => {
-        console.log(`Proxy server running on port ${port}`);
-        console.log(`Available proxies: ${proxyUrls.join(', ')}`);
-        console.log(`Current proxy: ${currentProxy}`);
-        console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
-    });
-}
-
-module.exports = serverless(app);
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+    console.log(`Proxy server running on port ${port}`);
+    console.log(`Available proxies: ${proxyUrls.join(', ')}`);
+    console.log(`Current proxy: ${currentProxy}`);
+    console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
+});
