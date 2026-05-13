@@ -1,3 +1,8 @@
+const path = require("path");
+const { spawn } = require("child_process");
+const serverless = require("serverless-http");
+const app = require("./proxy");
+
 const isServerless = !!(
     process.env.VERCEL ||
     process.env.VERCEL_ENV ||
@@ -6,13 +11,8 @@ const isServerless = !!(
 );
 
 if (isServerless) {
-    const serverless = require("serverless-http");
-    const app = require("./proxy");
     module.exports.handler = serverless(app);
 } else {
-    const { spawn } = require("child_process");
-    const path = require("path");
-
     const SCRIPT_FILE = "proxy.js";
     const SCRIPT_PATH = path.join(__dirname, SCRIPT_FILE);
 
