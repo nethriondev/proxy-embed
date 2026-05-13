@@ -12,7 +12,7 @@ const isServerless = !!(
 );
 
 if (isServerless) {
-    module.exports.handler = serverless(app);
+    module.exports = serverless(app);
 } else {
     const SCRIPT_FILE = "proxy.js";
     const SCRIPT_PATH = path.join(__dirname, SCRIPT_FILE);
