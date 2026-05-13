@@ -381,10 +381,14 @@ app.options("*", (req, res) => {
     res.sendStatus(200);
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Proxy server running on port ${port}`);
-    console.log(`Available proxies: ${proxyUrls.join(', ')}`);
-    console.log(`Current proxy: ${currentProxy}`);
-    console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
-});
+if (require.main === module) {
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => {
+        console.log(`Proxy server running on port ${port}`);
+        console.log(`Available proxies: ${proxyUrls.join(', ')}`);
+        console.log(`Current proxy: ${currentProxy}`);
+        console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
+    });
+}
+
+module.exports = app;
