@@ -141,10 +141,13 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 0;
   }
   
-  if (responseContentType.includes('text/html') ||
-      responseContentType.includes('application/json') ||
+  if (responseContentType.includes('application/json') ||
       responseContentType.includes('text/event-stream')) {
     return 0;
+  }
+  
+  if (responseContentType.includes('text/html')) {
+    return 3600;
   }
   
   if (pathname.endsWith('.m3u8') || 
@@ -274,7 +277,8 @@ async function proxyRequestToOrigin(request, clientIP) {
   }
 
   if (request.headers.get('x-is-internal') === 'true') {
-    trustedIps.add(clientIP);
+      request.headers.set('x-is-internal', 'true');
+      trustedIps.add(clientIP);
   }
 
   const contentType = response.headers.get('content-type') || '';
