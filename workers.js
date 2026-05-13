@@ -280,8 +280,8 @@ async function proxyRequestToOrigin(request, clientIP) {
     });
   }
 
-  if (request.headers.get('x-is-internal') === 'true') {
-      request.headers.set('x-is-internal', 'true');
+  if (request?.headers?.get('x-is-internal') === 'true') {
+      request?.headers?.set('x-is-internal', 'true');
       trustedIps.add(clientIP);
   }
 
