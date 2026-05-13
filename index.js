@@ -1,6 +1,7 @@
 const path = require("path");
 const { spawn } = require("child_process");
 const serverless = require("serverless-http");
+require("express");
 const app = require("./proxy");
 
 const isServerless = !!(
