@@ -1,60 +1,44 @@
-const path = require("path");
 const { spawn } = require("child_process");
-const serverless = require("serverless-http");
-require("express");
-const app = require("./proxy");
+const path = require("path");
 
-const isServerless = !!(
-    process.env.VERCEL ||
-    process.env.VERCEL_ENV ||
-    process.env.AWS_EXECUTION_ENV ||
-    process.env.LAMBDA_TASK_ROOT
-);
+const SCRIPT_FILE = "proxy.js";
+const SCRIPT_PATH = path.join(__dirname, SCRIPT_FILE);
 
-if (isServerless) {
-    module.exports = serverless(app);
-} else {
-    const SCRIPT_FILE = "proxy.js";
-    const SCRIPT_PATH = path.join(__dirname, SCRIPT_FILE);
+const restartEnabled = process.env.PID !== "0";
 
-    console.log("SCRIPT_PATH:", SCRIPT_PATH);
+let mainProcess;
 
-    const restartEnabled = process.env.PID !== "0";
+function start() {
+    console.log("Starting main process...");
 
-    let mainProcess;
+    mainProcess = spawn("node", ["--no-deprecation", "--no-warnings", SCRIPT_PATH], {
+        cwd: __dirname,
+        stdio: "inherit",
+        shell: true,
+    });
 
-    function start() {
-        console.log("Starting main process...");
+    mainProcess.on("error", (err) => {
+        console.error("Error occurred while starting the process:", err);
+    });
 
-        mainProcess = spawn("node", ["--no-deprecation", "--no-warnings", SCRIPT_PATH], {
-            cwd: __dirname,
-            stdio: "inherit",
-            shell: true,
-        });
-
-        mainProcess.on("error", (err) => {
-            console.error("Error occurred while starting the process:", err);
-        });
-
-        mainProcess.on("close", (exitCode) => {
-            console.log(`Process exited with code [${exitCode}]`);
-            if (restartEnabled) {
-                console.log("Restarting process...");
-                restartProcess();
-            } else {
-                console.log("Shutdown initiated...");
-                process.exit(exitCode);
-            }
-        });
-    }
-
-    function restartProcess() {
-        if (mainProcess && mainProcess.pid) {
-            mainProcess.kill("SIGKILL");
-            console.log("Main process killed. Restarting...");
+    mainProcess.on("close", (exitCode) => {
+        console.log(`Process exited with code [${exitCode}]`);
+        if (restartEnabled) {
+            console.log("Restarting process...");
+            restartProcess();
+        } else {
+            console.log("Shutdown initiated...");
+            process.exit(exitCode);
         }
-        start();
-    }
+    });
+}
 
+function restartProcess() {
+    if (mainProcess && mainProcess.pid) {
+        mainProcess.kill("SIGKILL");
+        console.log("Main process killed. Restarting...");
+    }
     start();
 }
+
+start();

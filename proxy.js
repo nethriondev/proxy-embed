@@ -1,6 +1,7 @@
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const fs = require("fs");
+const serverless = require("serverless-http");
 
 let proxyUrls = [];
 let blockedIps = ['72.60.237.246'];
@@ -391,4 +392,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = app;
+module.exports = serverless(app);
