@@ -201,11 +201,6 @@ const getClientIp = (req) => {
   return req.ip || 'unknown';
 };
 
-const getClientKey = (req) => {
-  const ua = (req.headers['user-agent'] || '').substring(0, 30);
-  return `${req.clientIp}:${ua}`;
-};
-
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
 
@@ -214,10 +209,8 @@ app.use((req, res, next) => {
         return;
     }
 
-    const clientKey = getClientKey(req);
-
-    if (isBanned(clientKey)) {
-        console.log(`Banned client ${clientKey} auto-blocked`);
+    if (isBanned(req.clientIp)) {
+        console.log(`Banned IP ${req.clientIp} auto-blocked`);
         req.socket.destroy();
         return;
     }
@@ -230,35 +223,35 @@ app.use((req, res, next) => {
 
     const now = Date.now();
 
-    if (!ipRequests.has(clientKey)) {
-        ensureCapacity(clientKey);
-        ipRequests.set(clientKey, []);
+    if (!ipRequests.has(req.clientIp)) {
+        ensureCapacity(req.clientIp);
+        ipRequests.set(req.clientIp, []);
     }
-    const timestamps = ipRequests.get(clientKey);
+    const timestamps = ipRequests.get(req.clientIp);
     const windowStart = now - RATE_LIMIT_WINDOW_MS;
     while (timestamps.length > 0 && timestamps[0] < windowStart) {
         timestamps.shift();
     }
     if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-        console.log(`Rate limit exceeded for ${clientKey}`);
-        recordViolation(clientKey);
+        console.log(`Rate limit exceeded for ${req.clientIp}`);
+        recordViolation(req.clientIp);
         req.socket.destroy();
         return;
     }
     timestamps.push(now);
 
-    const concurrent = ipConcurrent.get(clientKey) || 0;
+    const concurrent = ipConcurrent.get(req.clientIp) || 0;
     if (concurrent >= MAX_CONCURRENT_PER_IP) {
-        console.log(`Concurrent limit exceeded for ${clientKey}`);
-        recordViolation(clientKey);
+        console.log(`Concurrent limit exceeded for ${req.clientIp}`);
+        recordViolation(req.clientIp);
         req.socket.destroy();
         return;
     }
-    ipConcurrent.set(clientKey, concurrent + 1);
+    ipConcurrent.set(req.clientIp, concurrent + 1);
     res.on('finish', () => {
-        const c = ipConcurrent.get(clientKey) || 1;
-        if (c <= 1) ipConcurrent.delete(clientKey);
-        else ipConcurrent.set(clientKey, c - 1);
+        const c = ipConcurrent.get(req.clientIp) || 1;
+        if (c <= 1) ipConcurrent.delete(req.clientIp);
+        else ipConcurrent.set(req.clientIp, c - 1);
     });
 
     next();

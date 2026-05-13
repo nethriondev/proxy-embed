@@ -130,11 +130,6 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-const getClientKey = (request, clientIP) => {
-  const ua = (request.headers.get('user-agent') || '').substring(0, 30);
-  return `${clientIP}:${ua}`;
-};
-
 function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   const pathname = url.pathname.toLowerCase();
   
@@ -334,17 +329,15 @@ export default {
         return await proxyRequestToOrigin(request, clientIP);
       }
 
-      const clientKey = getClientKey(request, clientIP);
-
-      if (bannedIps.has(clientKey)) {
-        const until = bannedIps.get(clientKey);
+      if (bannedIps.has(clientIP)) {
+        const until = bannedIps.get(clientIP);
         if (Date.now() < until) {
           return new Response('Too Many Requests', {
             status: 429,
             headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
           });
         }
-        bannedIps.delete(clientKey);
+        bannedIps.delete(clientIP);
       }
 
       if (BLOCKED_IPS.includes(clientIP)) {
@@ -358,17 +351,17 @@ export default {
 
       const now = Date.now();
 
-      if (!ipRequests.has(clientKey)) {
-        ensureCapacity(clientKey);
-        ipRequests.set(clientKey, []);
+      if (!ipRequests.has(clientIP)) {
+        ensureCapacity(clientIP);
+        ipRequests.set(clientIP, []);
       }
-      const timestamps = ipRequests.get(clientKey);
+      const timestamps = ipRequests.get(clientIP);
       const windowStart = now - RATE_LIMIT_WINDOW_MS;
       while (timestamps.length > 0 && timestamps[0] < windowStart) {
         timestamps.shift();
       }
       if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-        recordViolation(clientKey);
+        recordViolation(clientIP);
         return new Response('Too Many Requests', {
           status: 429,
           headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
@@ -376,21 +369,21 @@ export default {
       }
       timestamps.push(now);
 
-      const concurrent = ipConcurrent.get(clientKey) || 0;
+      const concurrent = ipConcurrent.get(clientIP) || 0;
       if (concurrent >= MAX_CONCURRENT_PER_IP) {
-        recordViolation(clientKey);
+        recordViolation(clientIP);
         return new Response('Too Many Requests', {
           status: 429,
           headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
         });
       }
-      ipConcurrent.set(clientKey, concurrent + 1);
+      ipConcurrent.set(clientIP, concurrent + 1);
 
       const result = await proxyRequestToOrigin(request, clientIP);
 
-      const c = ipConcurrent.get(clientKey) || 1;
-      if (c <= 1) ipConcurrent.delete(clientKey);
-      else ipConcurrent.set(clientKey, c - 1);
+      const c = ipConcurrent.get(clientIP) || 1;
+      if (c <= 1) ipConcurrent.delete(clientIP);
+      else ipConcurrent.set(clientIP, c - 1);
 
       return result;
     } catch (error) {
