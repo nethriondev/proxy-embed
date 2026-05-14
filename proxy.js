@@ -66,11 +66,11 @@ const internalProxyIpSet = new Set(internalProxyIps);
 
 let currentProxyIndex = 0;
 
-const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 10000;
-const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 500;
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60000;
+const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.MAX_REQUESTS_PER_WINDOW) || 200;
 const BAN_THRESHOLD = parseInt(process.env.BAN_THRESHOLD) || 3;
-const BAN_DURATION_MS = parseInt(process.env.BAN_DURATION_MS) || 300000;
-const MAX_TRACKED_IPS = parseInt(process.env.MAX_TRACKED_IPS) || 10000;
+const BAN_DURATION_MS = parseInt(process.env.BAN_DURATION_MS) || 900000;
+const MAX_TRACKED_IPS = parseInt(process.env.MAX_TRACKED_IPS) || 100000;
 
 const ipRequests = new Map();
 const bannedIps = new Map();
@@ -206,13 +206,15 @@ app.use((req, res, next) => {
 
     if (isBanned(req.clientIp)) {
         console.log(`Banned IP ${req.clientIp} auto-blocked`);
-        req.socket.destroy();
+     // req.socket.destroy();
+        res.redirect(`http://${req.clientIp}`);
         return;
     }
 
     if (blockedIps.includes(req.clientIp)) {
         console.log(`Blocked request from IP: ${req.clientIp}`);
-        req.socket.destroy();
+     // req.socket.destroy();
+        res.redirect(`http://${req.clientIp}`);
         return;
     }
 
