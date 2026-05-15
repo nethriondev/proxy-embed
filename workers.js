@@ -240,15 +240,22 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
 
 async function proxyRequestToOrigin(request, clientIP) {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    try {
-      const url = new URL(request.url);
-      url.hostname = new URL(ORIGIN_URLS[0]).hostname;
-      url.protocol = 'https:';
-      url.port = '443';
-      return fetch(url.toString(), request);
-    } catch (error) {
-      return new Response('WebSocket upgrade failed', { status: 502 });
+    let lastError = null;
+    
+    for (const originUrl of ORIGIN_URLS) {
+      try {
+        const url = new URL(request.url);
+        url.hostname = new URL(originUrl).hostname;
+        url.protocol = 'https:';
+        url.port = '443';
+        return fetch(url.toString(), request);
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
     }
+    
+    return new Response('WebSocket upgrade failed - all origins unreachable', { status: 502 });
   }
 
   if (request.method === "OPTIONS") {

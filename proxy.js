@@ -2,6 +2,7 @@ const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const axios = require("axios");
 const fs = require("fs");
+const WebSocket = require("ws");
 
 let proxyUrls = [];
 let blockedIps = ['72.60.237.246'];
@@ -160,6 +161,56 @@ const ensureCapacity = (ip) => {
             violationCounts.delete(oldest);
         }
     }
+};
+
+const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
+    const pathname = url.toLowerCase();
+    
+    if (statusCode !== 200 && statusCode !== 206) {
+        return 0;
+    }
+    
+    if (hasRangeHeader) {
+        return 3600;
+    }
+    
+    if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
+        return 0;
+    }
+    
+    if (contentType.includes('application/json') || contentType.includes('text/event-stream')) {
+        return 0;
+    }
+    
+    if (contentType.includes('text/html')) {
+        return 3600;
+    }
+    
+    if (pathname.endsWith('.m3u8') || contentType.includes('application/vnd.apple.mpegurl') || contentType.includes('application/x-mpegurl')) {
+        return 43200;
+    }
+    
+    if (pathname.endsWith('.mpd') || contentType.includes('application/dash+xml')) {
+        return 43200;
+    }
+    
+    if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
+        return 43200;
+    }
+    
+    return 43200;
 };
 
 const app = express();
@@ -342,12 +393,32 @@ app.use(
             proxyRes.headers['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream';
             proxyRes.headers['access-control-expose-headers'] = '*';
             
-            if (isStreamingRequest(req)) {
+            const contentType = proxyRes.headers['content-type'] || '';
+            const url = req.url;
+            const hasRangeHeader = !!req.headers['range'];
+            const statusCode = proxyRes.statusCode;
+            const cacheTtl = getCacheTtl(url, contentType, hasRangeHeader, statusCode);
+            const shouldCache = cacheTtl > 0 && (statusCode === 200 || statusCode === 206);
+            
+            if (shouldCache && !isStreamingRequest(req)) {
+                proxyRes.headers['Cache-Control'] = `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`;
+                proxyRes.headers['X-Cache'] = 'MISS';
+                proxyRes.headers['CDN-Cache-Control'] = `public, max-age=${cacheTtl}`;
+                proxyRes.headers['Vary'] = 'Accept-Encoding';
+            } else if (isStreamingRequest(req)) {
                 proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
                 proxyRes.headers['x-accel-buffering'] = 'no';
                 proxyRes.headers['cf-cache-status'] = 'DYNAMIC';
                 proxyRes.headers['connection'] = 'keep-alive';
                 delete proxyRes.headers['content-length'];
+            }
+            
+            if (statusCode === 206) {
+                const contentRange = proxyRes.headers['content-range'];
+                if (contentRange) {
+                    proxyRes.headers['content-range'] = contentRange;
+                }
+                proxyRes.headers['accept-ranges'] = 'bytes';
             }
         },
         onError: (err, req, res) => {
@@ -384,9 +455,125 @@ app.options("*", (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Proxy server running on port ${port}`);
     console.log(`Available proxies: ${proxyUrls.join(', ')}`);
     console.log(`Current proxy: ${currentProxy}`);
     console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled (single proxy only)'}`);
 });
+
+server.on('upgrade', (req, socket, head) => {
+    const clientIp = getClientIp(req);
+    
+    if (trustedIps.has(clientIp) || internalProxyIpSet.has(clientIp)) {
+        handleWebSocketUpgrade(req, socket, head, clientIp);
+        return;
+    }
+    
+    if (isBanned(clientIp) || blockedIps.includes(clientIp)) {
+        socket.destroy();
+        return;
+    }
+    
+    const now = Date.now();
+    if (!ipRequests.has(clientIp)) {
+        ensureCapacity(clientIp);
+        ipRequests.set(clientIp, []);
+    }
+    const timestamps = ipRequests.get(clientIp);
+    const windowStart = now - RATE_LIMIT_WINDOW_MS;
+    while (timestamps.length > 0 && timestamps[0] < windowStart) {
+        timestamps.shift();
+    }
+    if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
+        recordViolation(clientIp);
+        socket.destroy();
+        return;
+    }
+    timestamps.push(now);
+    
+    handleWebSocketUpgrade(req, socket, head, clientIp);
+});
+
+function handleWebSocketUpgrade(req, socket, head, clientIp) {
+    let wsConnection = null;
+    let lastError = null;
+    
+    for (const proxyUrl of proxyUrls) {
+        try {
+            const targetUrl = new URL(proxyUrl);
+            targetUrl.protocol = 'wss:';
+            targetUrl.pathname = req.url;
+            
+            const headers = {
+                'X-Client-IP': clientIp,
+                'X-Forwarded-For': clientIp,
+                'X-Real-IP': clientIp,
+                'Host': targetUrl.host,
+                'User-Agent': req.headers['user-agent'] || '',
+                'Accept': req.headers['accept'] || '',
+                'Accept-Language': req.headers['accept-language'] || '',
+                'Origin': req.headers['origin'] || '',
+                'Connection': 'Upgrade',
+                'Upgrade': 'websocket'
+            };
+            
+            if (req.headers['x-is-internal'] === 'true') {
+                trustedIps.add(clientIp);
+                headers['x-is-internal'] = 'true';
+            }
+            
+            wsConnection = new WebSocket(targetUrl.toString(), {
+                headers: headers
+            });
+            
+            wsConnection.on('open', () => {
+                if (head && head.length > 0) {
+                    wsConnection.send(head);
+                }
+                
+                socket.on('data', (data) => {
+                    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                        wsConnection.send(data);
+                    }
+                });
+                
+                wsConnection.on('message', (data) => {
+                    if (socket.writable) {
+                        socket.write(data);
+                    }
+                });
+            });
+            
+            wsConnection.on('error', (err) => {
+                lastError = err;
+                if (wsConnection) wsConnection.close();
+            });
+            
+            wsConnection.on('close', () => {
+                if (socket && !socket.destroyed) {
+                    socket.end();
+                }
+            });
+            
+            socket.on('error', (err) => {
+                if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                    wsConnection.close();
+                }
+            });
+            
+            socket.on('close', () => {
+                if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                    wsConnection.close();
+                }
+            });
+            
+            return;
+        } catch (error) {
+            lastError = error;
+            continue;
+        }
+    }
+    
+    socket.destroy();
+}
