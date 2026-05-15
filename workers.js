@@ -297,6 +297,9 @@ async function proxyRequestToOrigin(request, clientIP) {
     resHeaders.set('accept-ranges', 'bytes');
   }
 
+  resHeaders.delete('x-railway-edge');
+  resHeaders.delete('x-railway-request-id');
+
   resHeaders.set('Access-Control-Allow-Origin', '*');
   resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
