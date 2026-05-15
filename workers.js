@@ -194,6 +194,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
     cfSettings.cacheEverything = false;
   }
 
+  let lastErrorResponse = null;
   let lastError = null;
 
   for (const originUrl of ORIGIN_URLS) {
@@ -218,19 +219,20 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
 
     try {
       const response = await fetch(fetchUrl.toString(), fetchOptions);
-      
-      if (response.ok || response.status === 206) {
-        return response;
+
+      if (response.status > 500) {
+        lastErrorResponse = response;
+        continue;
       }
 
-      if (response.status < 500) {
-        return response;
-      }
-
-      lastError = new Error(`Origin ${originUrl} returned status ${response.status}`);
+      return response;
     } catch (error) {
       lastError = error;
     }
+  }
+
+  if (lastErrorResponse) {
+    return lastErrorResponse;
   }
 
   throw lastError || new Error('All origins failed');
