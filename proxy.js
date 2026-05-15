@@ -100,17 +100,28 @@ const isBanned = (ip) => {
     if (!bannedIps.has(ip)) return false;
     const until = bannedIps.get(ip);
     if (Date.now() > until) {
+        stopProbingIp(ip);
         bannedIps.delete(ip);
         return false;
     }
     return true;
 };
 
+const stopProbingIp = (ip) => {
+    if (probingIntervals.has(ip)) {
+        clearInterval(probingIntervals.get(ip));
+        probingIntervals.delete(ip);
+    }
+};
+
 const cleanMaps = () => {
     const now = Date.now();
     const cutoff = now - RATE_LIMIT_WINDOW_MS;
     for (const [ip, until] of bannedIps) {
-        if (now > until) bannedIps.delete(ip);
+        if (now > until) {
+            stopProbingIp(ip);
+            bannedIps.delete(ip);
+        }
     }
     for (const [ip, timestamps] of ipRequests) {
         while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
