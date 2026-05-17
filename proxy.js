@@ -170,12 +170,12 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
         return 0;
     }
     
-    if (hasRangeHeader) {
-        return 3600;
-    }
-    
     if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
         return 0;
+    }
+    
+    if (hasRangeHeader) {
+        return 3600;
     }
     
     if (contentType.includes('application/json') || contentType.includes('text/event-stream')) {
