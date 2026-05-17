@@ -319,6 +319,8 @@ async function proxyRequestToOrigin(request, clientIP) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     resHeaders.set('CF-Cache-Status', 'MISS');
     resHeaders.set('X-Cache', 'MISS');
+  } else {
+    resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
 
   return new Response(response.body, {

@@ -411,6 +411,9 @@ app.use(
                 proxyRes.headers['cf-cache-status'] = 'DYNAMIC';
                 proxyRes.headers['connection'] = 'keep-alive';
                 delete proxyRes.headers['content-length'];
+            } else {
+                proxyRes.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                proxyRes.headers['CDN-Cache-Control'] = 'no-cache, no-store, must-revalidate';
             }
             
             if (statusCode === 206) {
