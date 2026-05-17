@@ -2,6 +2,21 @@
 
 > A dual-deployment reverse proxy — runs as an **Express server** (Node.js / Vercel / Railway) or a **Cloudflare Worker** at the edge. Forwards HTTP/WebSocket requests to configurable backend URLs with rate limiting, IP filtering, proxy rotation/failover, smart caching, and media streaming support.
 
+## Why Proxy Embed?
+
+| Benefit | What it means for you |
+|---------|----------------------|
+| **Dual deployment** | Run the same proxy on Node.js (Railway/Vercel) **or** Cloudflare Workers — no code changes needed |
+| **Abuse protection** | Rate limiting + IP blocklisting + auto-ban stops malicious traffic before it reaches your backend |
+| **High availability** | Automatic failover across multiple backend URLs — if one goes down, traffic routes to the next |
+| **Global edge caching** | Content-type-aware caching with TTLs up to 12h — reduces backend load and speeds up delivery |
+| **Media streaming ready** | Range request support (seeking), HLS/DASH caching, SSE passthrough — works out of the box with video/audio |
+| **Hide your origin** | Clients never see your real backend — the proxy sits in front as a shield |
+| **Real IP detection** | Accurately identifies client IPs behind CDNs, load balancers, and Vercel/Cloudflare — no misattribution |
+| **WebSocket passthrough** | Proxies WebSocket connections with the same rate limiting and IP filtering as HTTP |
+| **CORS for everyone** | Wildcard CORS headers on every response — any frontend can talk to your backend |
+| **Production ready** | Auto-restart on crash, memory-safe IP tracking (capped at 100k), periodic cleanup of stale data |
+
 ## Project Structure
 
 ```
