@@ -165,18 +165,13 @@ const ensureCapacity = (ip) => {
 
 const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
     const fullPath = url.toLowerCase();
-    // Strip query string to get clean pathname for reliable matching
     const pathname = fullPath.includes('?') ? fullPath.split('?')[0] : fullPath;
     
     if (statusCode !== 200 && statusCode !== 206) {
         return 0;
     }
     
-    // http-proxy-middleware's pathRewrite strips the leading / from req.url,
-    // so check both /api/ and api/ prefixes
-    // Only skip caching for /api/ paths WITHOUT file extensions
-    // Paths like /api/image.jpg should still be cached
-    if ((pathname.startsWith('/api/') || pathname.startsWith('api/')) && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
+    if (pathname.startsWith('api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
         return 0;
     }
     
