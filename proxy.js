@@ -174,7 +174,8 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
     
     // http-proxy-middleware's pathRewrite strips the leading / from req.url,
     // so check both /api/ and api/ prefixes
-    if ((pathname.startsWith('/api/') || pathname.startsWith('api/')) && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
+    // Never cache any /api/ path, even ones with file extensions
+    if (pathname.startsWith('/api/') || pathname.startsWith('api/')) {
         return 0;
     }
     
