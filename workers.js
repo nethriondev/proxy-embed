@@ -132,10 +132,6 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 0;
   }
   
-  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
-    return 0;
-  }
-  
   if (hasRangeHeader) {
     return 3600;
   }
@@ -148,6 +144,10 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   if (responseContentType.includes('text/html')) {
     return 3600;
   }
+  
+  if (!pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
+        return 0;
+    }
   
   if (pathname.endsWith('.m3u8') || 
       responseContentType.includes('application/vnd.apple.mpegurl') ||
