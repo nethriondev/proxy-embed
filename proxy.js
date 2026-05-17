@@ -164,8 +164,7 @@ const ensureCapacity = (ip) => {
 };
 
 const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
-    const fullPath = url.toLowerCase();
-    const pathname = fullPath.includes('?') ? fullPath.split('?')[0] : fullPath;
+    const pathname = url.toLowerCase();
     
     if (statusCode !== 200 && statusCode !== 206) {
         return 0;
