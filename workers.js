@@ -132,8 +132,9 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 0;
   }
   
-  // Never cache any /api/ path, even ones with file extensions
-  if (pathname.startsWith('/api/')) {
+  // Only skip caching for /api/ paths WITHOUT file extensions
+  // Paths like /api/image.jpg should still be cached
+  if (pathname.startsWith('/api/') && !pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
     return 0;
   }
   
