@@ -174,9 +174,13 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
         return 3600;
     }
     
-    if (contentType.includes('application/json') || contentType.includes('text/event-stream')) {
-        return 0;
+    if (contentType.includes('text/event-stream')) {
+    return 0; 
     }
+    
+    if (contentType.includes('application/json')) {
+    return 60;
+   }
     
     if (contentType.includes('text/html') || 
         contentType.includes('application/javascript') || 
