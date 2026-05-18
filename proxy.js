@@ -221,7 +221,11 @@ const isPathUnderAttack = (path) => {
 const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
     const pathname = url.toLowerCase();
     
-    if (statusCode !== 200 && statusCode !== 206) {
+    if (contentType.includes('application/json') && isPathUnderAttack(pathname)) {
+        return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
+    }
+    
+    if (statusCode < 200 || statusCode >= 300) {
         return 0;
     }
     
@@ -229,15 +233,39 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
         return 3600;
     }
     
-    if (contentType.includes('text/event-stream')) {
-        return 0;
+    if (contentType.includes('text/html') || 
+        contentType.includes('application/javascript') || 
+        contentType.includes('text/css') || 
+        contentType.includes('text/plain') || 
+        contentType.includes('text/xml')) {
+        return 3600;
     }
     
-    if (contentType.includes('application/json')) {
-        if (isPathUnderAttack(pathname)) {
-            return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
-        }
-        return 0;
+    if (pathname.endsWith('.m3u8') || 
+        contentType.includes('application/vnd.apple.mpegurl') ||
+        contentType.includes('application/x-mpegurl')) {
+        return 43200;
+    }
+    
+    if (pathname.endsWith('.mpd') || 
+        contentType.includes('application/dash+xml')) {
+        return 43200;
+    }
+    
+    if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
+        return 43200;
+    }
+    
+    if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
+        return 43200;
     }
     
     return 0;
@@ -428,7 +456,7 @@ app.use(
             const hasRangeHeader = !!req.headers['range'];
             const statusCode = proxyRes.statusCode;
             const cacheTtl = getCacheTtl(url, contentType, hasRangeHeader, statusCode);
-            const shouldCache = cacheTtl > 0 && (statusCode === 200 || statusCode === 206);
+            const shouldCache = cacheTtl > 0;
             
             if (shouldCache && !isStreamingRequest(req)) {
                 proxyRes.headers['Cache-Control'] = `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`;

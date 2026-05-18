@@ -183,23 +183,16 @@ const getClientIp = (request) => {
 function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   const pathname = url.pathname.toLowerCase();
   
-  if (responseStatus !== 200 && responseStatus !== 206) {
+  if (responseContentType.includes('application/json') && isPathUnderAttack(pathname)) {
+    return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
+  }
+  
+  if (responseStatus < 200 || responseStatus >= 300) {
     return 0;
   }
   
   if (hasRangeHeader) {
     return 3600;
-  }
-  
-  if (responseContentType.includes('text/event-stream')) {
-    return 0;
-  }
-
-  if (responseContentType.includes('application/json')) {
-    if (isPathUnderAttack(pathname)) {
-      return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
-    }
-    return 0;
   }
   
   if (responseContentType.includes('text/html') || 
@@ -373,7 +366,7 @@ async function proxyRequestToOrigin(request, clientIP) {
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
   const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status);
-  const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
+  const shouldCache = cacheTtl > 0;
 
   if (shouldCache) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
