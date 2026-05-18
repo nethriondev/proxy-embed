@@ -1,5 +1,5 @@
 const ORIGIN_URLS = [
-  'https://apiremake-production-4552.up.railway.app',
+  'https://apiremake-production-7612.up.railway.app',
 ];
 
 const BLOCKED_IPS = [
@@ -141,13 +141,13 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 0;
   }
   
-  if (responseContentType.includes('text/html')) {
+  if (responseContentType.includes('text/html') || 
+      responseContentType.includes('application/javascript') || 
+      responseContentType.includes('text/css') || 
+      responseContentType.includes('text/plain') || 
+      responseContentType.includes('text/xml')) {
     return 3600;
   }
-  
-  if (!pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
-        return 0;
-    }
   
   if (pathname.endsWith('.m3u8') || 
       responseContentType.includes('application/vnd.apple.mpegurl') ||
@@ -176,7 +176,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 43200;
   }
   
-  return 43200;
+  return 0;
 }
 
 async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
@@ -234,7 +234,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
   if (lastErrorResponse) {
     return lastErrorResponse;
   }
-
+  
   throw lastError || new Error('All origins failed');
 }
 
@@ -288,9 +288,8 @@ async function proxyRequestToOrigin(request, clientIP) {
     });
   }
 
-  if (request?.headers?.get('x-is-internal') === 'true') {
-      request?.headers?.set('x-is-internal', 'true');
-      trustedIps.add(clientIP);
+  if (request.headers.get('x-is-internal') === 'true') {
+    trustedIps.add(clientIP);
   }
 
   const contentType = response.headers.get('content-type') || '';

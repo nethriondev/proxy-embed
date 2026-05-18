@@ -178,15 +178,17 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
         return 0;
     }
     
-    if (contentType.includes('text/html')) {
+    if (contentType.includes('text/html') || 
+        contentType.includes('application/javascript') || 
+        contentType.includes('text/css') || 
+        contentType.includes('text/plain') || 
+        contentType.includes('text/xml')) {
         return 3600;
     }
     
-    if (!pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|mp4|webm|avi|mov|mkv|ts|m3u8|mpd|mp3|wav|ogg|m4a|flac|aac|m4s)$/i)) {
-        return 0;
-    }
-    
-    if (pathname.endsWith('.m3u8') || contentType.includes('application/vnd.apple.mpegurl') || contentType.includes('application/x-mpegurl')) {
+    if (pathname.endsWith('.m3u8') || 
+        contentType.includes('application/vnd.apple.mpegurl') || 
+        contentType.includes('application/x-mpegurl')) {
         return 43200;
     }
     
@@ -210,7 +212,7 @@ const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
         return 43200;
     }
     
-    return 43200;
+    return 0;
 };
 
 const app = express();
