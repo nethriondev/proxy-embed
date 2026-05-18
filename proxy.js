@@ -216,12 +216,22 @@ const recordPathRequest = (ip, path) => {
                 windowMs: windowMs
             });
             console.log(`ATTACK DETECTED on ${path} | IP: ${ip} | Count: ${count} requests in ${windowMs/1000}s window - CACHE PUNISHMENT ACTIVATED (${ATTACK_CONFIG.CACHE_PUNISHMENT_TTL}s)`);
+        } else {
+            pathsUnderAttack.get(path).triggeredAt = now;
         }
     }
 };
 
 setInterval(() => {
     const now = Date.now();
+    const punishCutoff = now - ATTACK_CONFIG.CACHE_PUNISHMENT_TTL * 1000;
+    
+    for (const [path, attack] of pathsUnderAttack) {
+        if (attack.triggeredAt < punishCutoff) {
+            console.log(`ATTACK DE-ESCALATED on ${path} - cache punishment expired`);
+            pathsUnderAttack.delete(path);
+        }
+    }
     
     for (const [ip, pathTimestamps] of ipPathTimestamps) {
         for (const [path, timestamps] of pathTimestamps) {
