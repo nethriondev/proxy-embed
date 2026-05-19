@@ -523,6 +523,7 @@ app.use(
             if (cachedResponse && !isStreamingRequest(req)) {
                 res.setHeader('X-Cache', 'HIT');
                 res.setHeader('Cache-Control', cachedResponse.headers['Cache-Control']);
+                res.setHeader('CDN-Cache-Control', cachedResponse.headers['CDN-Cache-Control']);
                 res.setHeader('access-control-allow-origin', '*');
                 res.setHeader('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
                 res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, X-Requested-With, Accept, X-Stream');
@@ -554,19 +555,25 @@ app.use(
                 const responseBody = Buffer.concat(bodyChunks);
                 
                 if (shouldCache && !isStreamingRequest(req) && statusCode === 200) {
+                    const cacheControl = `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`;
+                    const cdnCacheControl = `public, max-age=${cacheTtl}`;
+                    
+                    proxyRes.headers['X-Cache'] = 'MISS';
+                    proxyRes.headers['Cache-Control'] = cacheControl;
+                    proxyRes.headers['CDN-Cache-Control'] = cdnCacheControl;
+                    proxyRes.headers['Vary'] = 'Accept-Encoding';
+                    
                     responseCache.set(cacheKey, {
                         body: responseBody,
-                        headers: proxyRes.headers,
+                        headers: {
+                            'Cache-Control': cacheControl,
+                            'CDN-Cache-Control': cdnCacheControl
+                        },
                         statusCode: statusCode
                     }, cacheTtl);
-                    proxyRes.headers['X-Cache'] = 'MISS';
-                    proxyRes.headers['Cache-Control'] = `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`;
-                    proxyRes.headers['CDN-Cache-Control'] = `public, max-age=${cacheTtl}`;
-                    proxyRes.headers['Vary'] = 'Accept-Encoding';
                 } else if (isStreamingRequest(req)) {
                     proxyRes.headers['cache-control'] = 'no-cache, no-transform, must-revalidate';
                     proxyRes.headers['x-accel-buffering'] = 'no';
-                    proxyRes.headers['cf-cache-status'] = 'DYNAMIC';
                     proxyRes.headers['connection'] = 'keep-alive';
                     delete proxyRes.headers['content-length'];
                 } else {
@@ -626,4 +633,37 @@ const server = app.listen(port, () => {
     console.log(`Current proxy: ${currentProxy}`);
     console.log(`Proxy rotation: ${proxyUrls.length > 1 ? 'Enabled' : 'Disabled'}`);
     console.log(`Attack threshold: ${IP_PATH_ATTACK_THRESHOLD} requests per IP per path (window = cache TTL)`);
+});
+
+server.on('upgrade', (req, socket, head) => {
+    const clientIp = getClientIp(req);
+    
+    if (trustedIps.has(clientIp) || internalProxyIpSet.has(clientIp)) {
+        const target = proxyUrls[currentProxyIndex];
+        const targetUrl = new URL(target);
+        
+        const proxySocket = net.connect({
+            host: targetUrl.hostname,
+            port: targetUrl.port || 443
+        }, () => {
+            socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
+                        'Upgrade: websocket\r\n' +
+                        'Connection: Upgrade\r\n' +
+                        '\r\n');
+            proxySocket.pipe(socket);
+            socket.pipe(proxySocket);
+        });
+        
+        proxySocket.on('error', (err) => {
+            console.error('WebSocket proxy error:', err);
+            socket.destroy();
+        });
+        
+        socket.on('error', (err) => {
+            console.error('WebSocket client error:', err);
+            proxySocket.destroy();
+        });
+    } else {
+        socket.destroy();
+    }
 });

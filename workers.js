@@ -1,6 +1,4 @@
-const ORIGIN_URLS = [
-  'https://apiremake-production-7612.up.railway.app',
-];
+const ORIGIN_URL = 'https://apiremake-production-7612.up.railway.app';
 
 const BLOCKED_IPS = [
   '72.60.237.246'
@@ -31,8 +29,6 @@ const ATTACK_CONFIG = {
 
 const IP_PATH_ATTACK_THRESHOLD = 500;
 const MAX_TRACKED_PATH_IPS = 50000;
-
-const responseCache = new Map();
 
 const getTrackingWindowMs = () => {
     return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL * 1000;
@@ -161,13 +157,6 @@ const cleanMaps = () => {
             .slice(0, ipPathTimestamps.size - MAX_TRACKED_PATH_IPS);
         for (const [ip] of excess) {
             ipPathTimestamps.delete(ip);
-        }
-    }
-    
-    const cacheCutoff = now - 43200000;
-    for (const [key, cached] of responseCache) {
-        if (cached.timestamp < cacheCutoff) {
-            responseCache.delete(key);
         }
     }
 };
@@ -313,94 +302,13 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, e
   return 0;
 }
 
-async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
-  const cacheKey = `${request.method}:${url.pathname}${url.search}`;
-  const cachedResponse = responseCache.get(cacheKey);
-  
-  if (cachedResponse && !noCache) {
-    const isExpired = Date.now() > cachedResponse.expiry;
-    if (!isExpired) {
-      return cachedResponse.response;
-    }
-    responseCache.delete(cacheKey);
-  }
-  
-  const newHeaders = new Headers(request.headers);
-  newHeaders.set('x-forwarded-for', clientIP);
-  newHeaders.set('x-real-ip', clientIP);
-  newHeaders.set('cf-connecting-ip', clientIP);
-
-  const cfSettings = { 
-    polish: 'lossy', 
-    mirage: true 
-  };
-  
-  if (!noCache) {
-    cfSettings.cacheEverything = true;
-  }
-
-  let lastErrorResponse = null;
-  let lastError = null;
-
-  for (const originUrl of ORIGIN_URLS) {
-    const fetchUrl = new URL(url.toString());
-    fetchUrl.hostname = new URL(originUrl).hostname;
-    fetchUrl.protocol = 'https:';
-    fetchUrl.port = '443';
-
-    const fetchOptions = {
-      method: request.method,
-      headers: new Headers(newHeaders),
-      cf: { ...cfSettings }
-    };
-
-    if (rangeHeader) {
-      fetchOptions.headers.set('Range', rangeHeader);
-    }
-
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      fetchOptions.body = request.body;
-    }
-
-    try {
-      const response = await fetch(fetchUrl.toString(), fetchOptions);
-
-      if (response.status > 500) {
-        lastErrorResponse = response;
-        continue;
-      }
-
-      return response;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  if (lastErrorResponse) {
-    return lastErrorResponse;
-  }
-  
-  throw lastError || new Error('All origins failed');
-}
-
-async function proxyRequestToOrigin(request, clientIP) {
+async function proxyRequestToOrigin(request, clientIP, env, ctx) {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    let lastError = null;
-    
-    for (const originUrl of ORIGIN_URLS) {
-      try {
-        const url = new URL(request.url);
-        url.hostname = new URL(originUrl).hostname;
-        url.protocol = 'https:';
-        url.port = '443';
-        return fetch(url.toString(), request);
-      } catch (error) {
-        lastError = error;
-        continue;
-      }
-    }
-    
-    return new Response('WebSocket upgrade failed - all origins unreachable', { status: 502 });
+    const url = new URL(request.url);
+    url.hostname = new URL(ORIGIN_URL).hostname;
+    url.protocol = 'https:';
+    url.port = '443';
+    return fetch(url.toString(), request);
   }
 
   if (request.method === "OPTIONS") {
@@ -421,27 +329,54 @@ async function proxyRequestToOrigin(request, clientIP) {
   const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
                   request.headers.get('pragma') === 'no-cache';
 
-  let response;
-  try {
-    response = await proxyFetch(url, request, clientIP, rangeHeader, noCache);
-  } catch (error) {
-    return new Response(error.message || 'Origin server error', {
-      status: 502,
-      headers: {
-        'Content-Type': 'text/plain'
-      }
-    });
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString(), request);
+  let cachedResponse = await cache.match(cacheKey);
+  let fromCache = false;
+  
+  if (cachedResponse && !noCache) {
+    fromCache = true;
+  } else {
+    const newHeaders = new Headers(request.headers);
+    newHeaders.set('x-forwarded-for', clientIP);
+    newHeaders.set('x-real-ip', clientIP);
+    newHeaders.set('cf-connecting-ip', clientIP);
+    newHeaders.set('x-is-internal', 'true');
+
+    const fetchUrl = new URL(url.toString());
+    fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
+    fetchUrl.protocol = 'https:';
+    fetchUrl.port = '443';
+
+    const fetchOptions = {
+      method: request.method,
+      headers: newHeaders,
+      cf: { cacheEverything: true, polish: 'lossy', mirage: true }
+    };
+
+    if (rangeHeader) {
+      fetchOptions.headers.set('Range', rangeHeader);
+    }
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      fetchOptions.body = request.body;
+    }
+
+    try {
+      cachedResponse = await fetch(fetchUrl.toString(), fetchOptions);
+    } catch (error) {
+      return new Response('Origin server error', {
+        status: 502,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
   }
 
-  if (request.headers.get('x-is-internal') === 'true') {
-    trustedIps.add(clientIP);
-  }
+  const contentType = cachedResponse.headers.get('content-type') || '';
+  const resHeaders = new Headers(cachedResponse.headers);
 
-  const contentType = response.headers.get('content-type') || '';
-  const resHeaders = new Headers(response.headers);
-
-  if (response.status === 206) {
-    const contentRange = response.headers.get('content-range');
+  if (cachedResponse.status === 206) {
+    const contentRange = cachedResponse.headers.get('content-range');
     if (contentRange) {
       resHeaders.set('content-range', contentRange);
     }
@@ -457,38 +392,35 @@ async function proxyRequestToOrigin(request, clientIP) {
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
   const ext = url.searchParams.get('ext') || undefined;
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status, ext);
-  const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
-  const cacheKey = `${request.method}:${url.pathname}${url.search}`;
-  const wasCached = responseCache.has(cacheKey) && !noCache;
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, ext);
+  const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206);
 
   if (shouldCache) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
-    resHeaders.set('CF-Cache-Status', wasCached ? 'HIT' : 'MISS');
-    resHeaders.set('X-Cache', wasCached ? 'HIT' : 'MISS');
+    resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
+    resHeaders.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+    resHeaders.set('CF-Cache-Status', fromCache ? 'HIT' : 'MISS');
+    resHeaders.set('Vary', 'Accept-Encoding');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
   }
 
-  const responseBody = await response.arrayBuffer();
+  const responseBody = await cachedResponse.arrayBuffer();
   
-  if (shouldCache && !noCache && !wasCached) {
-    const clonedResponse = new Response(responseBody, {
-      status: response.status,
-      statusText: response.statusText,
+  if (shouldCache && !noCache && !fromCache) {
+    const newResponse = new Response(responseBody, {
+      status: cachedResponse.status,
+      statusText: cachedResponse.statusText,
       headers: resHeaders
     });
     
-    responseCache.set(cacheKey, {
-      response: clonedResponse,
-      expiry: Date.now() + (cacheTtl * 1000),
-      timestamp: Date.now()
-    });
+    ctx.waitUntil(cache.put(cacheKey, newResponse.clone()));
   }
 
   return new Response(responseBody, {
-    status: response.status,
-    statusText: response.statusText,
+    status: cachedResponse.status,
+    statusText: cachedResponse.statusText,
     headers: resHeaders
   });
 }
@@ -509,7 +441,7 @@ export default {
       recordPathRequest(clientIP, url.pathname);
 
       if (trustedIps.has(clientIP) || internalProxyIps.has(clientIP)) {
-        return await proxyRequestToOrigin(request, clientIP);
+        return await proxyRequestToOrigin(request, clientIP, env, ctx);
       }
 
       if (bannedIps.has(clientIP)) {
@@ -526,9 +458,7 @@ export default {
       if (BLOCKED_IPS.includes(clientIP)) {
         return new Response('Forbidden', { 
           status: 403,
-          headers: {
-            'Content-Type': 'text/plain'
-          }
+          headers: { 'Content-Type': 'text/plain' }
         });
       }
 
@@ -552,15 +482,13 @@ export default {
       }
       timestamps.push(now);
 
-      const result = await proxyRequestToOrigin(request, clientIP);
+      const result = await proxyRequestToOrigin(request, clientIP, env, ctx);
 
       return result;
     } catch (error) {
       return new Response('Internal Server Error', { 
         status: 500,
-        headers: {
-          'Content-Type': 'text/plain'
-        }
+        headers: { 'Content-Type': 'text/plain' }
       });
     }
   }
