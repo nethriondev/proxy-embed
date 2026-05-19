@@ -23,12 +23,10 @@ function getMediaPath(pathname, ext) {
     return pathname + cleanExt.toLowerCase();
 }
 
-const MEDIA_EXT_RE = /\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/;
-
-const getTrackingWindowMs = (pathname, ext) => {
-    const lower = getMediaPath(pathname.toLowerCase(), ext);
+const getTrackingWindowMs = (pathname) => {
+    const lower = pathname.toLowerCase();
     
-    if (lower.match(MEDIA_EXT_RE)) {
+    if (lower.match(/\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/)) {
         return 43200 * 1000;
     }
     
@@ -215,9 +213,9 @@ const ensurePathCapacity = (ip) => {
     }
 };
 
-const recordPathRequest = (ip, path, ext) => {
+const recordPathRequest = (ip, path) => {
     const now = Date.now();
-    const windowMs = getTrackingWindowMs(path, ext);
+    const windowMs = getTrackingWindowMs(path);
     
     if (!ipPathTimestamps.has(ip)) {
         ensurePathCapacity(ip);
@@ -411,10 +409,8 @@ const getClientIp = (req) => {
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
     
-    const parsedUrl = new URL(req.url, 'http://localhost');
-    const path = parsedUrl.pathname;
-    const ext = parsedUrl.searchParams.get('ext') || undefined;
-    recordPathRequest(req.clientIp, path, ext);
+    const path = new URL(req.url, 'http://localhost').pathname;
+    recordPathRequest(req.clientIp, path);
 
     if (trustedIps.has(req.clientIp) || internalProxyIpSet.has(req.clientIp)) {
         next();
