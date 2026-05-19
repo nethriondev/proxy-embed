@@ -16,7 +16,8 @@ const CACHE_CONFIG = {
   PARTIAL_TTL: 3600,
   FULL_TTL: 604800,
   MANIFEST_TTL: 43200,
-  ATTACK_PUNISHMENT_TTL: 300
+  ATTACK_PUNISHMENT_TTL: 300,
+  CHUNK_SIZE: 1024 * 1024
 };
 
 const ipRequests = new Map();
@@ -172,7 +173,160 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, ext) {
+const parseRangeHeader = (rangeHeader, fileSize) => {
+  const matches = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+  if (!matches) return null;
+  
+  let start = parseInt(matches[1], 10);
+  let end = matches[2] ? parseInt(matches[2], 10) : fileSize - 1;
+  
+  start = Math.min(Math.max(0, start), fileSize - 1);
+  end = Math.min(end, fileSize - 1);
+  
+  return { start, end };
+};
+
+async function getVideoChunk(url, start, end, cache, clientIP, ctx) {
+  const chunkKey = new Request(`${url.toString()}?chunk=${start}-${end}`, {
+    headers: { 'Range': `bytes=${start}-${end}` }
+  });
+  
+  let cached = await cache.match(chunkKey);
+  
+  if (!cached) {
+    const fetchUrl = new URL(url.pathname + url.search, ORIGIN_URL);
+    const headers = new Headers();
+    headers.set('Range', `bytes=${start}-${end}`);
+    headers.set('x-forwarded-for', clientIP);
+    headers.set('x-real-ip', clientIP);
+    
+    try {
+      cached = await fetch(fetchUrl.toString(), {
+        method: 'GET',
+        headers: headers,
+        cf: { cacheEverything: true }
+      });
+      
+      if (cached.status === 206 || cached.status === 200) {
+        const responseToCache = cached.clone();
+        ctx.waitUntil(cache.put(chunkKey, responseToCache));
+      }
+    } catch (error) {
+      return new Response('Chunk fetch error', { status: 502 });
+    }
+  }
+  
+  return cached;
+}
+
+async function handleLargeMediaWithChunks(request, url, clientIP, env, ctx) {
+  const cache = caches.default;
+  const rangeHeader = request.headers.get('range');
+  const CHUNK_SIZE = CACHE_CONFIG.CHUNK_SIZE;
+  
+  const headKey = new Request(`${url.toString()}?head=true`, { method: 'HEAD' });
+  let headResponse = await cache.match(headKey);
+  
+  if (!headResponse) {
+    const headFetch = await fetch(new URL(url.pathname, ORIGIN_URL).toString(), {
+      method: 'HEAD',
+      headers: { 'x-forwarded-for': clientIP }
+    });
+    headResponse = new Response(null, {
+      headers: headFetch.headers
+    });
+    ctx.waitUntil(cache.put(headKey, headResponse.clone()));
+  }
+  
+  const contentLength = parseInt(headResponse.headers.get('content-length') || '0');
+  if (!contentLength) {
+    return null;
+  }
+  
+  if (!rangeHeader) {
+    const chunkStart = 0;
+    const chunkEnd = Math.min(CHUNK_SIZE - 1, contentLength - 1);
+    return await getVideoChunk(url, chunkStart, chunkEnd, cache, clientIP, ctx);
+  }
+  
+  const parsedRange = parseRangeHeader(rangeHeader, contentLength);
+  if (!parsedRange) {
+    return new Response('Invalid Range', { status: 416 });
+  }
+  
+  let { start, end } = parsedRange;
+  const requestedLength = end - start + 1;
+  
+  if (requestedLength < CHUNK_SIZE) {
+    const chunkStart = Math.floor(start / CHUNK_SIZE) * CHUNK_SIZE;
+    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE - 1, contentLength - 1);
+    const chunk = await getVideoChunk(url, chunkStart, chunkEnd, cache, clientIP, ctx);
+    
+    if (!chunk || chunk.status !== 206) {
+      return chunk;
+    }
+    
+    const chunkData = await chunk.arrayBuffer();
+    const offsetInChunk = start - chunkStart;
+    const sliceEnd = Math.min(offsetInChunk + requestedLength, chunkData.byteLength);
+    const slicedData = chunkData.slice(offsetInChunk, sliceEnd);
+    
+    const headers = new Headers();
+    headers.set('Content-Type', chunk.headers.get('content-type') || 'video/mp4');
+    headers.set('Content-Range', `bytes ${start}-${end}/${contentLength}`);
+    headers.set('Content-Length', slicedData.byteLength.toString());
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Cache-Control', `public, max-age=${CACHE_CONFIG.PARTIAL_TTL}`);
+    
+    return new Response(slicedData, {
+      status: 206,
+      statusText: 'Partial Content',
+      headers: headers
+    });
+  }
+  
+  const chunks = [];
+  let currentStart = start;
+  
+  while (currentStart <= end) {
+    const chunkEnd = Math.min(currentStart + CHUNK_SIZE - 1, end);
+    const chunk = await getVideoChunk(url, currentStart, chunkEnd, cache, clientIP, ctx);
+    if (chunk && chunk.body) {
+      chunks.push(chunk.body);
+    }
+    currentStart = chunkEnd + 1;
+  }
+  
+  const stream = new ReadableStream({
+    async start(controller) {
+      for (const chunkBody of chunks) {
+        const reader = chunkBody.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+      }
+      controller.close();
+    }
+  });
+  
+  const headers = new Headers();
+  headers.set('Content-Type', 'video/mp4');
+  headers.set('Content-Range', `bytes ${start}-${end}/${contentLength}`);
+  headers.set('Content-Length', (end - start + 1).toString());
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Access-Control-Allow-Origin', '*');
+  
+  return new Response(stream, {
+    status: 206,
+    statusText: 'Partial Content',
+    headers: headers
+  });
+}
+
+function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, ext, contentLength) {
   const pathname = url.pathname.toLowerCase();
   
   if (responseStatus < 200 || responseStatus >= 400) {
@@ -197,6 +351,9 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, e
   }
   
   if (effectivePath.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
+    if (contentLength > 10 * 1024 * 1024) {
+      return 0;
+    }
     if (hasRangeHeader) {
       return CACHE_CONFIG.PARTIAL_TTL;
     }
@@ -204,6 +361,9 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, e
   }
   
   if (effectivePath.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
+    if (contentLength > 10 * 1024 * 1024) {
+      return 0;
+    }
     if (hasRangeHeader) {
       return CACHE_CONFIG.PARTIAL_TTL;
     }
@@ -255,8 +415,18 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
   }
 
   const url = new URL(request.url);
-  const rangeHeader = request.headers.get('range');
+  const pathname = url.pathname.toLowerCase();
   
+  const isLargeMediaFile = pathname.match(/\.(mp4|webm|avi|mov|mkv|mp3|wav|ogg|m4a|flac|aac)$/i);
+  
+  if (isLargeMediaFile) {
+    const chunkedResponse = await handleLargeMediaWithChunks(request, url, clientIP, env, ctx);
+    if (chunkedResponse) {
+      return chunkedResponse;
+    }
+  }
+  
+  const rangeHeader = request.headers.get('range');
   const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
                   request.headers.get('pragma') === 'no-cache';
 
@@ -304,6 +474,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
 
   const contentType = cachedResponse.headers.get('content-type') || '';
   const resHeaders = new Headers(cachedResponse.headers);
+  const contentLength = parseInt(cachedResponse.headers.get('content-length') || '0');
 
   if (cachedResponse.status === 206) {
     const contentRange = cachedResponse.headers.get('content-range');
@@ -322,8 +493,8 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
   const ext = url.searchParams.get('ext') || undefined;
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, ext);
-  const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206);
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, ext, contentLength);
+  const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206) && !isLargeMediaFile;
 
   if (shouldCache) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
@@ -336,13 +507,13 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
     resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
   }
 
-  const isSegment = url.pathname.match(/\.(ts|m4s)$/i);
-  const isVideo = url.pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i);
-  const isAudio = url.pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i);
-  const isManifest = url.pathname.match(/\.(m3u8|mpd)$/i);
+  const isSegment = pathname.match(/\.(ts|m4s)$/i);
+  const isVideo = pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i);
+  const isAudio = pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i);
+  const isManifest = pathname.match(/\.(m3u8|mpd)$/i);
   const isMedia = isSegment || isVideo || isAudio || isManifest;
 
-  if (isMedia && shouldCache) {
+  if (isMedia && shouldCache && !isLargeMediaFile) {
     if (!fromCache) {
       const cacheClone = cachedResponse.clone();
       ctx.waitUntil(cache.put(cacheKey, cacheClone));
@@ -356,7 +527,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
 
   const responseBody = await cachedResponse.arrayBuffer();
   
-  if (shouldCache && !noCache && !fromCache) {
+  if (shouldCache && !noCache && !fromCache && !isLargeMediaFile) {
     const newResponse = new Response(responseBody, {
       status: cachedResponse.status,
       statusText: cachedResponse.statusText,
@@ -399,8 +570,8 @@ export default {
         bannedIps.delete(clientIP);
       }
 
-          if (BLOCKED_IPS.includes(clientIP)) {
-    const asciiTroll = `
+      if (BLOCKED_IPS.includes(clientIP)) {
+        const asciiTroll = `
 +--------------------------------------------------+
 |               ACCESS DENIED                      |
 +--------------------------------------------------+
@@ -422,14 +593,14 @@ export default {
 +--------------------------------------------------+
   `;
   
-  return new Response(asciiTroll, { 
-    status: 403,
-    headers: { 
-      'Content-Type': 'text/plain',
-      'Dumb-Skid-Ip': clientIP
-    }
-  });
-}
+        return new Response(asciiTroll, { 
+          status: 403,
+          headers: { 
+            'Content-Type': 'text/plain',
+            'Dumb-Skid-Ip': clientIP
+          }
+        });
+      }
 
       const now = Date.now();
 
