@@ -17,10 +17,18 @@ const ATTACK_CONFIG = {
 
 const IP_PATH_ATTACK_THRESHOLD = 500;
 
-const getTrackingWindowMs = (pathname) => {
-    const lower = pathname.toLowerCase();
+function getMediaPath(pathname, ext) {
+    if (!ext) return pathname;
+    const cleanExt = ext.startsWith('.') ? ext : '.' + ext;
+    return pathname + cleanExt.toLowerCase();
+}
+
+const MEDIA_EXT_RE = /\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/;
+
+const getTrackingWindowMs = (pathname, ext) => {
+    const lower = getMediaPath(pathname.toLowerCase(), ext);
     
-    if (lower.match(/\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/)) {
+    if (lower.match(MEDIA_EXT_RE)) {
         return 43200 * 1000;
     }
     
@@ -207,9 +215,9 @@ const ensurePathCapacity = (ip) => {
     }
 };
 
-const recordPathRequest = (ip, path) => {
+const recordPathRequest = (ip, path, ext) => {
     const now = Date.now();
-    const windowMs = getTrackingWindowMs(path);
+    const windowMs = getTrackingWindowMs(path, ext);
     
     if (!ipPathTimestamps.has(ip)) {
         ensurePathCapacity(ip);
@@ -293,10 +301,11 @@ const isPathUnderAttack = (path) => {
     return pathsUnderAttack.has(path);
 };
 
-const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
-    const pathname = url.toLowerCase();
+const getCacheTtl = (url, contentType, hasRangeHeader, statusCode, ext) => {
+    const originalPathname = url.toLowerCase();
+    const pathname = getMediaPath(originalPathname, ext);
     
-    if (contentType.includes('application/json') && isPathUnderAttack(pathname)) {
+    if (contentType.includes('application/json') && isPathUnderAttack(originalPathname)) {
         return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
     }
     
@@ -402,8 +411,10 @@ const getClientIp = (req) => {
 app.use((req, res, next) => {
     req.clientIp = getClientIp(req);
     
-    const path = new URL(req.url, 'http://localhost').pathname;
-    recordPathRequest(req.clientIp, path);
+    const parsedUrl = new URL(req.url, 'http://localhost');
+    const path = parsedUrl.pathname;
+    const ext = parsedUrl.searchParams.get('ext') || undefined;
+    recordPathRequest(req.clientIp, path, ext);
 
     if (trustedIps.has(req.clientIp) || internalProxyIpSet.has(req.clientIp)) {
         next();
@@ -527,10 +538,12 @@ app.use(
             proxyRes.headers['access-control-expose-headers'] = '*';
             
             const contentType = proxyRes.headers['content-type'] || '';
-            const url = new URL(req.url, 'http://localhost').pathname;
+            const parsedUrl = new URL(req.url, 'http://localhost');
+            const url = parsedUrl.pathname;
+            const ext = parsedUrl.searchParams.get('ext') || undefined;
             const hasRangeHeader = !!req.headers['range'];
             const statusCode = proxyRes.statusCode;
-            const cacheTtl = getCacheTtl(url, contentType, hasRangeHeader, statusCode);
+            const cacheTtl = getCacheTtl(url, contentType, hasRangeHeader, statusCode, ext);
             const shouldCache = cacheTtl > 0;
             
             if (shouldCache && !isStreamingRequest(req)) {

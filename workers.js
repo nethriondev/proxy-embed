@@ -32,10 +32,18 @@ const ATTACK_CONFIG = {
 
 const IP_PATH_ATTACK_THRESHOLD = 500;
 
-const getTrackingWindowMs = (pathname) => {
-    const lower = pathname.toLowerCase();
+function getMediaPath(pathname, ext) {
+    if (!ext) return pathname;
+    const cleanExt = ext.startsWith('.') ? ext : '.' + ext;
+    return pathname + cleanExt.toLowerCase();
+}
+
+const MEDIA_EXT_RE = /\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/;
+
+const getTrackingWindowMs = (pathname, ext) => {
+    const lower = getMediaPath(pathname.toLowerCase(), ext);
     
-    if (lower.match(/\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/)) {
+    if (lower.match(MEDIA_EXT_RE)) {
         return 43200 * 1000;
     }
     
@@ -109,9 +117,9 @@ const ensurePathCapacity = (ip) => {
     }
 };
 
-const recordPathRequest = (ip, path) => {
+const recordPathRequest = (ip, path, ext) => {
     const now = Date.now();
-    const windowMs = getTrackingWindowMs(path);
+    const windowMs = getTrackingWindowMs(path, ext);
     
     if (!ipPathTimestamps.has(ip)) {
         ensurePathCapacity(ip);
@@ -255,10 +263,11 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
-  const pathname = url.pathname.toLowerCase();
+function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, ext) {
+  const originalPathname = url.pathname.toLowerCase();
+  const pathname = getMediaPath(originalPathname, ext);
   
-  if (responseContentType.includes('application/json') && isPathUnderAttack(pathname)) {
+  if (responseContentType.includes('application/json') && isPathUnderAttack(originalPathname)) {
     return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
   }
   
@@ -440,7 +449,8 @@ async function proxyRequestToOrigin(request, clientIP) {
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status);
+  const ext = url.searchParams.get('ext') || undefined;
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status, ext);
   const shouldCache = cacheTtl > 0;
 
   if (shouldCache) {
@@ -465,8 +475,10 @@ export default {
       if (requestCount % 100 === 0) cleanMaps();
 
       const clientIP = getClientIp(request);
-      const requestPathname = new URL(request.url).pathname.toLowerCase();
-      recordPathRequest(clientIP, requestPathname);
+      const requestUrl = new URL(request.url);
+      const requestPathname = requestUrl.pathname.toLowerCase();
+      const ext = requestUrl.searchParams.get('ext') || undefined;
+      recordPathRequest(clientIP, requestPathname, ext);
 
       if (trustedIps.has(clientIP) || internalProxyIps.has(clientIP)) {
         return await proxyRequestToOrigin(request, clientIP);
