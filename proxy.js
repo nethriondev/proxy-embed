@@ -290,7 +290,7 @@ const isPathUnderAttack = (path) => {
 const getCacheTtl = (url, contentType, hasRangeHeader, statusCode) => {
     const pathname = url.toLowerCase();
     
-    if (contentType.includes('application/json') && isPathUnderAttack(originalPathname)) {
+    if (contentType.includes('application/json') && isPathUnderAttack(pathname)) {
         return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
     }
     

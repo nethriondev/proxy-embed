@@ -252,7 +252,7 @@ const getClientIp = (request) => {
 function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   const pathname = url.pathname.toLowerCase();
   
-  if (responseContentType.includes('application/json') && isPathUnderAttack(originalPathname)) {
+  if (responseContentType.includes('application/json') && isPathUnderAttack(pathname)) {
     return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
   }
   
