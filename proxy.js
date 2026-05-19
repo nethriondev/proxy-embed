@@ -23,13 +23,7 @@ function getMediaPath(pathname, ext) {
     return pathname + cleanExt.toLowerCase();
 }
 
-const getTrackingWindowMs = (pathname) => {
-    const lower = pathname.toLowerCase();
-    
-    if (lower.match(/\.(m3u8|mpd|ts|m4s|jpg|jpeg|png|gif|webp|bmp|svg|ico|mp3|wav|ogg|m4a|flac|aac|mp4|webm|avi|mov|mkv)$/)) {
-        return 43200 * 1000;
-    }
-    
+const getTrackingWindowMs = () => {
     return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL * 1000;
 };
 
@@ -215,7 +209,7 @@ const ensurePathCapacity = (ip) => {
 
 const recordPathRequest = (ip, path) => {
     const now = Date.now();
-    const windowMs = getTrackingWindowMs(path);
+    const windowMs = getTrackingWindowMs();
     
     if (!ipPathTimestamps.has(ip)) {
         ensurePathCapacity(ip);
@@ -267,7 +261,7 @@ setInterval(() => {
     
     for (const [ip, pathTimestamps] of ipPathTimestamps) {
         for (const [path, timestamps] of pathTimestamps) {
-            const windowMs = getTrackingWindowMs(path);
+            const windowMs = getTrackingWindowMs();
             const cutoff = now - windowMs;
             while (timestamps.length > 0 && timestamps[0] < cutoff) {
                 timestamps.shift();
