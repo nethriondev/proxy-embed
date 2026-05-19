@@ -17,11 +17,11 @@ const BAN_DURATION_MS = 900000;
 
 const CACHE_CONFIG = {
   SEGMENT_TTL: 86400,
-  PARTIAL_TTL: 3600,
+  PARTIAL_TTL: 86400,
   FULL_TTL: 604800,
   MANIFEST_TTL: 43200,
   ATTACK_PUNISHMENT_TTL: 300,
-  CHUNK_SIZE: 5 * 1024 * 1024
+  CHUNK_SIZE: 10 * 1024 * 1024
 };
 
 const ipRequests = new Map();
@@ -233,7 +233,19 @@ async function handleLargeMediaWithChunks(request, url, clientIP) {
   if (!rangeHeader) {
     const chunkStart = 0;
     const chunkEnd = Math.min(CHUNK_SIZE - 1, contentLength - 1);
-    return await getVideoChunk(url, chunkStart, chunkEnd, clientIP);
+    const firstChunk = await getVideoChunk(url, chunkStart, chunkEnd, clientIP);
+    
+    const headers = new Headers(firstChunk.headers);
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Cache-Control', `public, max-age=${CACHE_CONFIG.FULL_TTL}`);
+    headers.set('Content-Length', contentLength.toString());
+    
+    return new Response(firstChunk.body, {
+      status: 200,
+      statusText: 'OK',
+      headers: headers
+    });
   }
   
   const parsedRange = parseRangeHeader(rangeHeader, contentLength);
@@ -244,69 +256,28 @@ async function handleLargeMediaWithChunks(request, url, clientIP) {
   let { start, end } = parsedRange;
   const requestedLength = end - start + 1;
   
-  if (requestedLength < CHUNK_SIZE) {
-    const chunkStart = Math.floor(start / CHUNK_SIZE) * CHUNK_SIZE;
-    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE - 1, contentLength - 1);
-    const chunk = await getVideoChunk(url, chunkStart, chunkEnd, clientIP);
-    
-    if (!chunk || chunk.status !== 206) {
-      return chunk;
-    }
-    
-    const chunkData = await chunk.arrayBuffer();
-    const offsetInChunk = start - chunkStart;
-    const sliceEnd = Math.min(offsetInChunk + requestedLength, chunkData.byteLength);
-    const slicedData = chunkData.slice(offsetInChunk, sliceEnd);
-    
-    const headers = new Headers();
-    headers.set('Content-Type', chunk.headers.get('content-type') || 'video/mp4');
-    headers.set('Content-Range', `bytes ${start}-${end}/${contentLength}`);
-    headers.set('Content-Length', slicedData.byteLength.toString());
-    headers.set('Accept-Ranges', 'bytes');
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Cache-Control', `public, max-age=${CACHE_CONFIG.PARTIAL_TTL}`);
-    
-    return new Response(slicedData, {
-      status: 206,
-      statusText: 'Partial Content',
-      headers: headers
-    });
+  const chunkStart = Math.floor(start / CHUNK_SIZE) * CHUNK_SIZE;
+  const chunkEnd = Math.min(chunkStart + CHUNK_SIZE - 1, contentLength - 1);
+  const chunk = await getVideoChunk(url, chunkStart, chunkEnd, clientIP);
+  
+  if (!chunk || chunk.status !== 206) {
+    return chunk;
   }
   
-  const chunks = [];
-  let currentStart = start;
-  
-  while (currentStart <= end) {
-    const chunkEnd = Math.min(currentStart + CHUNK_SIZE - 1, end);
-    const chunk = await getVideoChunk(url, currentStart, chunkEnd, clientIP);
-    if (chunk && chunk.body) {
-      chunks.push(chunk.body);
-    }
-    currentStart = chunkEnd + 1;
-  }
-  
-  const stream = new ReadableStream({
-    async start(controller) {
-      for (const chunkBody of chunks) {
-        const reader = chunkBody.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          controller.enqueue(value);
-        }
-      }
-      controller.close();
-    }
-  });
+  const chunkData = await chunk.arrayBuffer();
+  const offsetInChunk = start - chunkStart;
+  const sliceEnd = Math.min(offsetInChunk + requestedLength, chunkData.byteLength);
+  const slicedData = chunkData.slice(offsetInChunk, sliceEnd);
   
   const headers = new Headers();
-  headers.set('Content-Type', 'video/mp4');
+  headers.set('Content-Type', chunk.headers.get('content-type') || 'video/mp4');
   headers.set('Content-Range', `bytes ${start}-${end}/${contentLength}`);
-  headers.set('Content-Length', (end - start + 1).toString());
+  headers.set('Content-Length', slicedData.byteLength.toString());
   headers.set('Accept-Ranges', 'bytes');
   headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Cache-Control', `public, max-age=${CACHE_CONFIG.PARTIAL_TTL}`);
   
-  return new Response(stream, {
+  return new Response(slicedData, {
     status: 206,
     statusText: 'Partial Content',
     headers: headers
