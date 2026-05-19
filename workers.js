@@ -128,7 +128,7 @@ const getClientIp = (request) => {
 function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
   const pathname = url.pathname.toLowerCase();
   
-  if (responseStatus !== 200 && responseStatus !== 206) {
+  if (responseStatus < 200 && responseStatus >= 400) {
     return 0;
   }
   
