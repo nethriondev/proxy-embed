@@ -125,10 +125,10 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
+function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, ext) {
   const pathname = url.pathname.toLowerCase();
   
-  if (responseStatus < 200 && responseStatus >= 400) {
+  if (responseStatus < 200 || responseStatus >= 400) {
     return 0;
   }
   
@@ -149,30 +149,33 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return 3600;
   }
   
-  if (pathname.endsWith('.m3u8') || 
+  // Check ext query param (?ext=.m3u8) alongside pathname
+  const effectivePath = ext ? pathname + ext.toLowerCase() : pathname;
+  
+  if (effectivePath.endsWith('.m3u8') || 
       responseContentType.includes('application/vnd.apple.mpegurl') ||
       responseContentType.includes('application/x-mpegurl')) {
     return 43200;
   }
   
-  if (pathname.endsWith('.mpd') || 
+  if (effectivePath.endsWith('.mpd') || 
       responseContentType.includes('application/dash+xml')) {
     return 43200;
   }
   
-  if (pathname.endsWith('.ts') || pathname.endsWith('.m4s')) {
+  if (effectivePath.endsWith('.ts') || effectivePath.endsWith('.m4s')) {
     return 43200;
   }
   
-  if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
+  if (effectivePath.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
     return 43200;
   }
   
-  if (pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
+  if (effectivePath.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
     return 43200;
   }
   
-  if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
+  if (effectivePath.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
     return 43200;
   }
   
@@ -191,7 +194,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
   };
   
   if (!noCache) {
-    cfSettings.cacheEverything = false;
+    cfSettings.cacheEverything = true;
   }
 
   let lastErrorResponse = null;
@@ -311,7 +314,8 @@ async function proxyRequestToOrigin(request, clientIP) {
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status);
+  const ext = url.searchParams.get('ext') || undefined;
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, response.status, ext);
   const shouldCache = cacheTtl > 0 && (response.status === 200 || response.status === 206);
 
   if (shouldCache) {
