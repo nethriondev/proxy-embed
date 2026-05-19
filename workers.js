@@ -262,7 +262,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus) {
     return ATTACK_CONFIG.CACHE_PUNISHMENT_TTL;
   }
   
-  if (responseStatus < 200 || responseStatus >= 300) {
+  if (responseStatus < 200 || responseStatus >= 400) {
     return 0;
   }
   

@@ -62,7 +62,6 @@ Same functionality deployed at the edge via Cloudflare Workers, plus:
 - **Range requests** — Partial content support for media streaming (`206 Partial Content`)
 - **WebSocket pass-through** — Proxy WebSocket upgrade requests to origin servers
 - **Cloudflare optimizations** — Polish (lossy image compression), Mirage (lazy loading), cache everything
-- **Attack detection** — Per-IP-per-path abuse monitoring with cache absorption and auto-de-escalation (same as Express)
 
 ## Quick Start
 
