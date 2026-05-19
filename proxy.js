@@ -471,10 +471,6 @@ app.use(
             proxyReq.setHeader("X-Client-IP", req.clientIp);
             proxyReq.setHeader("X-Forwarded-For", req.clientIp);
             proxyReq.setHeader("X-Real-IP", req.clientIp);
-            if (req?.headers?.['x-is-internal'] === 'true') {
-                trustedIps.add(req.clientIp);
-                proxyReq.setHeader("x-is-internal", "true");
-            }
 
             if (req.headers['user-agent']) {
                 proxyReq.setHeader("User-Agent", req.headers['user-agent']);
