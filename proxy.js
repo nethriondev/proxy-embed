@@ -527,7 +527,7 @@ app.use(
             proxyRes.headers['access-control-expose-headers'] = '*';
             
             const contentType = proxyRes.headers['content-type'] || '';
-            const url = req.url;
+            const url = new URL(req.url, 'http://localhost').pathname;
             const hasRangeHeader = !!req.headers['range'];
             const statusCode = proxyRes.statusCode;
             const cacheTtl = getCacheTtl(url, contentType, hasRangeHeader, statusCode);

@@ -320,7 +320,7 @@ async function proxyFetch(url, request, clientIP, rangeHeader, noCache) {
   };
   
   if (!noCache) {
-    cfSettings.cacheEverything = false;
+    cfSettings.cacheEverything = true;
   }
 
   let lastErrorResponse = null;
