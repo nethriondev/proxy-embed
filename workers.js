@@ -1,10 +1,12 @@
 const ORIGIN_URLS = [
+  'https://segfault.nport.link',
   'https://anisekai.nport.link',
   'https://85.215.229.230:9700',
   'https://apiremake-production-7612.up.railway.app',
   'https://oreo-h3pv.onrender.com'
 ];
 // nega
+
 const SERVERLESS_DOMAINS = [
   'onrender.com',
   'vercel.app',
