@@ -3,7 +3,6 @@ const ORIGIN_URLS = [
   'https://anisekai.nport.link',
   'https://apiremake-production-c01a.up.railway.app',
 ];
-// nega
 
 const SERVERLESS_DOMAINS = [
   'onrender.com',
@@ -30,6 +29,15 @@ const CACHE_CONFIG = {
   FULL_TTL: 604800,
   MANIFEST_TTL: 43200,
   ATTACK_PUNISHMENT_TTL: 300
+};
+
+const getSelfRedirectResponse = (attackerIP) => {
+  const response = Response.redirect(`http://${attackerIP}/`, 307);
+  response.headers.set("x-skid-ip", `${attackerIP} - hina ng ddos mo tanga!`);
+  response.headers.set("Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
+  response.headers.set("CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
+  response.headers.set("Vary", "CF-Connecting-IP");
+  return response;
 };
 
 const startTime = Date.now();
@@ -127,59 +135,6 @@ const cleanMaps = () => {
     }
   }
 };
-
-function getDashboardStats() {
-  const now = Date.now();
-  const windowMs = RATE_LIMIT_WINDOW_MS;
-  const windowStart = now - windowMs;
-
-  let totalRequests = 0;
-  const activeIps = [];
-  for (const [ip, timestamps] of ipRequests) {
-    const recent = timestamps.filter(t => t >= windowStart);
-    if (recent.length > 0) {
-      totalRequests += recent.length;
-      activeIps.push({ ip, requests: recent.length });
-    }
-  }
-
-  const bannedList = [];
-  for (const [ip, until] of bannedIps) {
-    bannedList.push({ ip, until: new Date(until).toISOString(), remainingMs: Math.max(0, until - now) });
-  }
-
-  const attacks = [];
-  for (const [path, attack] of pathsUnderAttack) {
-    attacks.push({
-      path,
-      active: attack.active,
-      count: attack.count,
-      ip: attack.ip,
-      triggeredAt: new Date(attack.triggeredAt).toISOString(),
-      windowMs: attack.windowMs
-    });
-  }
-
-  return {
-    startTime: new Date(startTime).toISOString(),
-    uptimeMs: now - startTime,
-    totalTrackedIps: ipRequests.size,
-    activeRequestsThisWindow: totalRequests,
-    activeIps: activeIps.sort((a, b) => b.requests - a.requests).slice(0, 20),
-    bannedIps: bannedList,
-    pathsUnderAttack: attacks,
-    rateLimit: {
-      windowMs: RATE_LIMIT_WINDOW_MS,
-      maxRequests: MAX_REQUESTS_PER_WINDOW,
-      banThreshold: BAN_THRESHOLD,
-      banDurationMs: BAN_DURATION_MS,
-    },
-    cacheConfig: CACHE_CONFIG,
-    ipPathAttackThreshold: IP_PATH_ATTACK_THRESHOLD,
-    trustedIpsCount: trustedIps.size,
-    blockedIpsCount: BLOCKED_IPS.length,
-  };
-}
 
 function recordViolation(ip) {
   const count = (violationCounts.get(ip) || 0) + 1;
@@ -493,89 +448,12 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
   });
 }
 
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Proxy Dashboard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;padding:20px}
-h1{font-size:1.5rem;margin-bottom:20px;color:#58a6ff}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:24px}
-.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
-.card h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;margin-bottom:8px}
-.card .value{font-size:1.75rem;font-weight:600;color:#f0f6fc}
-.card .sub{font-size:.8rem;color:#8b949e;margin-top:4px}
-table{width:100%;border-collapse:collapse;font-size:.875rem}
-th{text-align:left;padding:8px 12px;border-bottom:2px solid #30363d;color:#8b949e;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em}
-td{padding:8px 12px;border-bottom:1px solid #21262d}
-.section{margin-bottom:24px}
-.section h2{font-size:1.1rem;color:#58a6ff;margin-bottom:12px}
-.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:500}
-.badge-red{background:#da3633;color:#fff}
-.badge-yellow{background:#d29922;color:#fff}
-.badge-green{background:#238636;color:#fff}
-.badge-gray{background:#30363d;color:#8b949e}
-.empty{color:#8b949e;font-style:italic;padding:16px;text-align:center}
-#refresh-info{text-align:center;color:#8b949e;font-size:.8rem;margin-top:20px}
-@media(max-width:600px){.stats-grid{grid-template-columns:1fr}}
-</style>
-</head>
-<body>
-<h1>Proxy Dashboard</h1>
-<div class="stats-grid" id="summary"></div>
-<div class="section"><h2>Active IPs (top 20)</h2><div id="active-ips"></div></div>
-<div class="section"><h2>Banned IPs</h2><div id="banned-ips"></div></div>
-<div class="section"><h2>Paths Under Attack</h2><div id="attacks"></div></div>
-<div id="refresh-info">Auto-refreshes every 5s</div>
-<script>
-async function load(){try{const r=await fetch('?json'),d=await r.json();render(d)}catch(e){document.body.innerHTML='<p style=color:#da3633>Failed to load dashboard</p>'}}
-function render(d){
-let s='',cards=[
-{label:'Uptime',val:fmtUptime(d.uptimeMs),sub:'since '+new Date(d.startTime).toLocaleTimeString()},
-{label:'Active IPs',val:d.totalTrackedIps,sub:d.activeRequestsThisWindow+' requests in window'},
-{label:'Banned IPs',val:d.bannedIps.length,sub:'out of '+d.blockedIpsCount+' blocked'},
-{label:'Paths Under Attack',val:d.pathsUnderAttack.length,sub:'threshold: '+d.ipPathAttackThreshold},
-{label:'Rate Limit',val:d.rateLimit.maxRequests+'/min',sub:'ban after '+d.rateLimit.banThreshold+' violations'},
-];
-cards.forEach(c=>{s+='<div class=card><h3>'+c.label+'</h3><div class=value>'+c.val+'</div>'+(c.sub?'<div class=sub>'+c.sub+'</div>':'')+'</div>'});
-document.getElementById('summary').innerHTML=s;
-let t='';if(d.activeIps.length){t+='<table><tr><th>IP</th><th>Requests</th></tr>';d.activeIps.forEach(a=>{t+='<tr><td>'+a.ip+'</td><td>'+a.requests+'</td></tr>'});t+='</table>'}else{t='<div class=empty>No active IPs</div>'}
-document.getElementById('active-ips').innerHTML=t;
-t='';if(d.bannedIps.length){t+='<table><tr><th>IP</th><th>Remaining</th><th>Expires</th></tr>';d.bannedIps.forEach(b=>{t+='<tr><td>'+b.ip+'</td><td><span class=badge badge-red>'+fmtDur(b.remainingMs)+'</span></td><td>'+new Date(b.until).toLocaleTimeString()+'</td></tr>'});t+='</table>'}else{t='<div class=empty>None</div>'}
-document.getElementById('banned-ips').innerHTML=t;
-t='';if(d.pathsUnderAttack.length){t+='<table><tr><th>Path</th><th>Count</th><th>IP</th><th>Triggered</th></tr>';d.pathsUnderAttack.forEach(a=>{t+='<tr><td><code>'+a.path+'</code></td><td><span class=badge badge-yellow>'+a.count+'</span></td><td>'+a.ip+'</td><td>'+new Date(a.triggeredAt).toLocaleTimeString()+'</td></tr>'});t+='</table>'}else{t='<div class=empty>None</div>'}
-document.getElementById('attacks').innerHTML=t;
-}
-function fmtUptime(ms){const s=Math.floor(ms/1000);if(s<60)return s+'s';const m=Math.floor(s/60);if(m<60)return m+'m '+s%60+'s';const h=Math.floor(m/60);return h+'h '+m%60+'m'}
-function fmtDur(ms){const s=Math.ceil(ms/1000);if(s<60)return s+'s';const m=Math.floor(s/60);return m+'m'}
-load();setInterval(load,5000);
-</script>
-</body>
-</html>`;
-
 export default {
   async fetch(request, env, ctx) {
     try {
       const clientIP = getClientIp(request);
       
       const url = new URL(request.url);
-      
-      if (url.pathname === '/dashboard') {
-        const isJson = url.searchParams.has('json');
-        if (isJson) {
-          return new Response(JSON.stringify(getDashboardStats()), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-          });
-        }
-        return new Response(DASHBOARD_HTML, {
-          status: 200,
-          headers: { 'Content-Type': 'text/html;charset=utf-8' }
-        });
-      }
       
       recordPathRequest(clientIP, url.pathname);
 
@@ -586,44 +464,13 @@ export default {
       if (bannedIps.has(clientIP)) {
         const until = bannedIps.get(clientIP);
         if (Date.now() < until) {
-          return new Response('Too Many Requests', {
-            status: 429,
-            headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
-          });
+          return getSelfRedirectResponse(clientIP);
         }
         bannedIps.delete(clientIP);
       }
 
       if (BLOCKED_IPS.includes(clientIP)) {
-        const asciiTroll = `
-+--------------------------------------------------+
-|               ACCESS DENIED                      |
-+--------------------------------------------------+
-|      IP ni tangang skid: ${clientIP}             |
-|     (\\_/)                                       |
-|     (o.o)    Nice try, script kiddie             |
-|     (> <)    Your IP has been logged             |
-|                                                  |
-|     ╔══════════════════════════════════╗         |
-|     ║  Your hacking skills:            ║         |
-|     ║  [#-------------------] 1 %      ║         |
-|     ║  Keep trying, maybe next decade  ║         |
-|     ╚══════════════════════════════════╝         |
-|        Hina ng ddos mo tanga!                    |
-|     /-----------------------------------\\       |
-|     |  You have been permanently banned |        |
-|    \\-----------------------------------/        |
-|                                                  |
-+--------------------------------------------------+
-  `;
-  
-        return new Response(asciiTroll, { 
-          status: 403,
-          headers: { 
-            'Content-Type': 'text/plain',
-            'Dumb-Skid-Ip': clientIP
-          }
-        });
+        return getSelfRedirectResponse(clientIP);
       }
 
       const now = Date.now();
@@ -638,10 +485,7 @@ export default {
       }
       if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
         recordViolation(clientIP);
-        return new Response('Too Many Requests', {
-          status: 429,
-          headers: { 'Content-Type': 'text/plain', 'Retry-After': '300' }
-        });
+        return getSelfRedirectResponse(clientIP);
       }
       timestamps.push(now);
 
