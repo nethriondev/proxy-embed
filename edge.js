@@ -231,28 +231,58 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
   return 0;
 }
 
+async function fetchFromFastestOrigin(url, fetchOptions) {
+  const promises = ORIGIN_URLS.map(async (originUrl) => {
+    const fetchUrl = new URL(url.toString());
+    fetchUrl.hostname = new URL(originUrl).hostname;
+    fetchUrl.protocol = 'https:';
+    fetchUrl.port = '443';
+
+    const response = await fetch(fetchUrl.toString(), fetchOptions);
+    if (response.status < 400) {
+      return response;
+    }
+    throw new Error(`${originUrl} returned ${response.status}`);
+  });
+
+  try {
+    return await Promise.any(promises);
+  } catch {
+    throw new Error('All origins failed');
+  }
+}
+
+async function fetchWebSocketFromFastestOrigin(request) {
+  const promises = ORIGIN_URLS.map(async (originUrl) => {
+    const url = new URL(request.url);
+    url.hostname = new URL(originUrl).hostname;
+    url.protocol = 'https:';
+    url.port = '443';
+
+    const response = await fetch(url.toString(), request);
+    if (response.status === 101 || response.status < 400) {
+      return response;
+    }
+    throw new Error(`${originUrl} returned ${response.status}`);
+  });
+
+  try {
+    return await Promise.any(promises);
+  } catch {
+    throw new Error('All WebSocket origins failed');
+  }
+}
+
 async function proxyRequestToOrigin(request, clientIP) {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    let lastError;
-    for (const originUrl of ORIGIN_URLS) {
-      const url = new URL(request.url);
-      url.hostname = new URL(originUrl).hostname;
-      url.protocol = 'https:';
-      url.port = '443';
-      try {
-        const response = await fetch(url.toString(), request);
-        if (response.status === 101 || response.status < 400) {
-          return response;
-        }
-        lastError = new Error(`Origin returned ${response.status}`);
-      } catch (error) {
-        lastError = error;
-      }
+    try {
+      return await fetchWebSocketFromFastestOrigin(request);
+    } catch {
+      return new Response('WebSocket connection failed', {
+        status: 502,
+        headers: { 'Content-Type': 'text/plain' }
+      });
     }
-    return new Response('WebSocket connection failed', {
-      status: 502,
-      headers: { 'Content-Type': 'text/plain' }
-    });
   }
 
   if (request.method === "OPTIONS") {
@@ -291,27 +321,9 @@ async function proxyRequestToOrigin(request, clientIP) {
   }
 
   let originResponse;
-  let lastError;
-  for (const originUrl of ORIGIN_URLS) {
-    const fetchUrl = new URL(url.toString());
-    fetchUrl.hostname = new URL(originUrl).hostname;
-    fetchUrl.protocol = 'https:';
-    fetchUrl.port = '443';
-
-    try {
-      const response = await fetch(fetchUrl.toString(), fetchOptions);
-      if (response.status < 400) {
-        originResponse = response;
-        lastError = null;
-        break;
-      }
-      lastError = new Error(`Origin returned ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  if (lastError) {
+  try {
+    originResponse = await fetchFromFastestOrigin(url, fetchOptions);
+  } catch {
     return new Response('Origin server error', {
       status: 502,
       headers: { 'Content-Type': 'text/plain' }
