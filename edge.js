@@ -3,8 +3,7 @@ export const config = {
 };
 
 const ORIGIN_URLS = [
-  'https://proxy-embed.nethriondev.workers.dev',
-  'https://apiremake-production-7612.up.railway.app'
+  'https://proxy-embed.nethriondev.workers.dev'
 ];
 
 const SERVERLESS_DOMAINS = [
