@@ -1,7 +1,7 @@
 export const config = {
   runtime: 'edge'
 };
-
+// nega
 const ORIGIN_URLS = [
   'https://proxy-embed.nethriondev.workers.dev'
 ];
