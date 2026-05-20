@@ -2,7 +2,18 @@ export const config = {
   runtime: 'edge'
 };
 
-const ORIGIN_URL = 'https://proxy-embed.nethriondev.workers.dev';
+const ORIGIN_URLS = [
+  'https://proxy-embed.nethriondev.workers.dev',
+  'https://apiremake-production-7612.up.railway.app'
+];
+
+const SERVERLESS_DOMAINS = [
+  'onrender.com',
+  'vercel.app',
+  'netlify.app',
+  'fly.dev',
+  'deno.dev'
+];
 
 const BLOCKED_IPS = [
   '72.60.237.246'
@@ -223,11 +234,22 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
 
 async function proxyRequestToOrigin(request, clientIP) {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    const url = new URL(request.url);
-    url.hostname = new URL(ORIGIN_URL).hostname;
-    url.protocol = 'https:';
-    url.port = '443';
-    return fetch(url.toString(), request);
+    let lastError;
+    for (const originUrl of ORIGIN_URLS) {
+      const url = new URL(request.url);
+      url.hostname = new URL(originUrl).hostname;
+      url.protocol = 'https:';
+      url.port = '443';
+      try {
+        return await fetch(url.toString(), request);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    return new Response('WebSocket connection failed', {
+      status: 502,
+      headers: { 'Content-Type': 'text/plain' }
+    });
   }
 
   if (request.method === "OPTIONS") {
@@ -252,11 +274,6 @@ async function proxyRequestToOrigin(request, clientIP) {
   newHeaders.set('x-real-ip', clientIP);
   newHeaders.set('cf-connecting-ip', clientIP);
 
-  const fetchUrl = new URL(url.toString());
-  fetchUrl.hostname = new URL(ORIGIN_URL).hostname;
-  fetchUrl.protocol = 'https:';
-  fetchUrl.port = '443';
-
   const fetchOptions = {
     method: request.method,
     headers: newHeaders,
@@ -271,13 +288,32 @@ async function proxyRequestToOrigin(request, clientIP) {
   }
 
   let originResponse;
-  try {
-    originResponse = await fetch(fetchUrl.toString(), fetchOptions);
-  } catch (error) {
+  let lastError;
+  for (const originUrl of ORIGIN_URLS) {
+    const fetchUrl = new URL(url.toString());
+    fetchUrl.hostname = new URL(originUrl).hostname;
+    fetchUrl.protocol = 'https:';
+    fetchUrl.port = '443';
+
+    try {
+      originResponse = await fetch(fetchUrl.toString(), fetchOptions);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
     return new Response('Origin server error', {
       status: 502,
       headers: { 'Content-Type': 'text/plain' }
     });
+  }
+
+  for (const originUrl of ORIGIN_URLS) {
+    if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
+    fetch(originUrl, { method: 'HEAD' }).catch(() => {});
   }
 
   const contentType = originResponse.headers.get('content-type') || '';
@@ -337,7 +373,11 @@ async function proxyRequestToOrigin(request, clientIP) {
 
 setInterval(() => {
   cleanMaps();
-}, 15000);
+  for (const originUrl of ORIGIN_URLS) {
+    if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
+    fetch(originUrl, { method: 'HEAD' }).catch(() => {});
+  }
+}, 30000);
 
 export default async function middleware(request) {
   try {
