@@ -263,7 +263,7 @@ async function fetchFromFastestOrigin(url, fetchOptions) {
     fetchUrl.port = '443';
 
     const response = await fetch(fetchUrl.toString(), fetchOptions);
-    if (response.status < 400) {
+    if (response.status < 500) {
       return response;
     }
     throw new Error(`${originUrl} returned ${response.status}`);
@@ -284,7 +284,7 @@ async function fetchWebSocketFromFastestOrigin(request) {
     url.port = '443';
 
     const response = await fetch(url.toString(), request);
-    if (response.status === 101 || response.status < 400) {
+    if (response.status === 101 || response.status < 500) {
       return response;
     }
     throw new Error(`${originUrl} returned ${response.status}`);
