@@ -405,7 +405,7 @@ async function proxyRequestToOrigin(request, clientIP) {
         statusText: cachedResponse.statusText,
         headers: resHeaders
       });
-      cache.put(cacheKey, newResponse.clone()).catch(e => console.error('cache.put media failed', e));
+      await cache.put(cacheKey, newResponse.clone()).catch(() => {});
       return newResponse;
     }
     return new Response(cachedResponse.body, {
@@ -421,7 +421,7 @@ async function proxyRequestToOrigin(request, clientIP) {
       statusText: cachedResponse.statusText,
       headers: resHeaders
     });
-    cache.put(cacheKey, newResponse.clone()).catch(e => console.error('cache.put failed', e));
+    await cache.put(cacheKey, newResponse.clone()).catch(() => {});
     return newResponse;
   }
 

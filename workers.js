@@ -350,9 +350,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
       headers: newHeaders,
       cf: {
         polish: 'lossy',
-        mirage: true,
-        cacheTtl: 3600,
-        cacheEverything: true
+        mirage: true
       }
     };
 
