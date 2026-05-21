@@ -1,0 +1,1 @@
+export { middleware as default } from '../src/index.js';

@@ -1,19 +1,7 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "edge.js",
-      "use": "@vercel/node"
+  "functions": {
+    "api/proxy.js": {
+      "runtime": "edge"
     }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/edge.js"
-    }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  },
-  "headers": []
+  }
 }

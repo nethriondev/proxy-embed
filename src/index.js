@@ -1,9 +1,7 @@
-export const config = {
-  runtime: 'edge'
-};
-
 const ORIGIN_URLS = [
-  'https://proxy-embed.nethriondev.workers.dev'
+  'https://segfault.nport.link',
+  'https://anisekai.nport.link',
+  'https://apiremake-production-c01a.up.railway.app',
 ];
 
 const SERVERLESS_DOMAINS = [
@@ -19,11 +17,6 @@ const BLOCKED_IPS = [
 ];
 
 const INTERNAL_PROXY_IPS = ["162.220.234.134"];
-
-const RATE_LIMIT_WINDOW_MS = 60000;
-const MAX_REQUESTS_PER_WINDOW = 200;
-const BAN_THRESHOLD = 3;
-const BAN_DURATION_MS = 900000;
 
 const CACHE_CONFIG = {
   SEGMENT_TTL: 86400,
@@ -42,20 +35,10 @@ const getSelfRedirectResponse = (attackerIP) => {
   return response;
 };
 
-const ipRequests = new Map();
-const bannedIps = new Map();
-const violationCounts = new Map();
-const trustedIps = new Set();
-const internalProxyIps = new Set(INTERNAL_PROXY_IPS);
-
 const pathsUnderAttack = new Map();
 const ipPathTimestamps = new Map();
-
 const IP_PATH_ATTACK_THRESHOLD = 500;
-
-const getTrackingWindowMs = () => {
-  return CACHE_CONFIG.ATTACK_PUNISHMENT_TTL * 1000;
-};
+const ATTACK_WINDOW_MS = CACHE_CONFIG.ATTACK_PUNISHMENT_TTL * 1000;
 
 const isPathUnderAttack = (path) => {
   return pathsUnderAttack.has(path);
@@ -63,7 +46,6 @@ const isPathUnderAttack = (path) => {
 
 const recordPathRequest = (ip, path) => {
   const now = Date.now();
-  const windowMs = getTrackingWindowMs();
   
   if (!ipPathTimestamps.has(ip)) {
     ipPathTimestamps.set(ip, new Map());
@@ -78,21 +60,16 @@ const recordPathRequest = (ip, path) => {
   const timestamps = pathTimestamps.get(path);
   timestamps.push(now);
   
-  const cutoff = now - windowMs;
+  const cutoff = now - ATTACK_WINDOW_MS;
   while (timestamps.length > 0 && timestamps[0] < cutoff) {
     timestamps.shift();
   }
   
-  const count = timestamps.length;
-  
-  if (count >= IP_PATH_ATTACK_THRESHOLD) {
+  if (timestamps.length >= IP_PATH_ATTACK_THRESHOLD) {
     if (!pathsUnderAttack.has(path)) {
       pathsUnderAttack.set(path, {
         active: true,
-        count: count,
-        ip: ip,
-        triggeredAt: now,
-        windowMs: windowMs
+        triggeredAt: now
       });
     } else {
       pathsUnderAttack.get(path).triggeredAt = now;
@@ -100,21 +77,9 @@ const recordPathRequest = (ip, path) => {
   }
 };
 
-function cleanMaps() {
+const cleanMaps = () => {
   const now = Date.now();
-  const cutoff = now - RATE_LIMIT_WINDOW_MS;
-  for (const [ip, until] of bannedIps) {
-    if (now > until) bannedIps.delete(ip);
-  }
-  for (const [ip, timestamps] of ipRequests) {
-    while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
-    if (timestamps.length === 0) {
-      ipRequests.delete(ip);
-      violationCounts.delete(ip);
-    }
-  }
-  
-  const punishCutoff = now - CACHE_CONFIG.ATTACK_PUNISHMENT_TTL * 1000;
+  const punishCutoff = now - ATTACK_WINDOW_MS;
   for (const [path, attack] of pathsUnderAttack) {
     if (attack.triggeredAt < punishCutoff) {
       pathsUnderAttack.delete(path);
@@ -122,8 +87,8 @@ function cleanMaps() {
   }
   for (const [ip, pathTimestamps] of ipPathTimestamps) {
     for (const [path, timestamps] of pathTimestamps) {
-      const cutoff2 = now - getTrackingWindowMs();
-      while (timestamps.length > 0 && timestamps[0] < cutoff2) {
+      const cutoff = now - ATTACK_WINDOW_MS;
+      while (timestamps.length > 0 && timestamps[0] < cutoff) {
         timestamps.shift();
       }
       if (timestamps.length === 0) {
@@ -134,16 +99,7 @@ function cleanMaps() {
       ipPathTimestamps.delete(ip);
     }
   }
-}
-
-function recordViolation(ip) {
-  const count = (violationCounts.get(ip) || 0) + 1;
-  violationCounts.set(ip, count);
-  if (count >= BAN_THRESHOLD) {
-    bannedIps.set(ip, Date.now() + BAN_DURATION_MS);
-    violationCounts.delete(ip);
-  }
-}
+};
 
 const getClientIp = (request) => {
   const forwardedHeader = request.headers.get('forwarded');
@@ -154,6 +110,13 @@ const getClientIp = (request) => {
       ip = ip.replace(/^\[|\]$/g, '');
       if (ip && ip !== 'unknown') return ip;
     }
+  }
+
+  const vercelForwardedFor = request.headers.get('x-vercel-forwarded-for');
+  if (vercelForwardedFor) {
+    const ips = vercelForwardedFor.split(',');
+    const firstIp = ips[0]?.trim();
+    if (firstIp) return firstIp;
   }
 
   const xForwardedFor = request.headers.get('x-forwarded-for');
@@ -281,7 +244,14 @@ async function fetchWebSocketFromFastestOrigin(request) {
   }
 }
 
-async function proxyRequestToOrigin(request, clientIP) {
+async function getCache() {
+  if (typeof caches !== 'undefined' && caches.open) {
+    return await caches.open('proxy-cache');
+  }
+  return caches.default;
+}
+
+async function proxyRequestToOrigin(request, clientIP, ctx) {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
     try {
       return await fetchWebSocketFromFastestOrigin(request);
@@ -312,7 +282,7 @@ async function proxyRequestToOrigin(request, clientIP) {
   const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
                   request.headers.get('pragma') === 'no-cache';
 
-  const cache = caches.default;
+  const cache = await getCache();
   const cacheKeyOptions = { method: request.method };
   if (rangeHeader) {
     cacheKeyOptions.headers = { Range: rangeHeader };
@@ -353,7 +323,10 @@ async function proxyRequestToOrigin(request, clientIP) {
 
     for (const originUrl of ORIGIN_URLS) {
       if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
-      fetch(originUrl, { method: 'HEAD' }).catch(() => {});
+      const promise = fetch(originUrl, { method: 'HEAD' }).catch(() => {});
+      if (ctx && ctx.waitUntil) {
+        ctx.waitUntil(promise);
+      }
     }
   }
 
@@ -383,14 +356,9 @@ async function proxyRequestToOrigin(request, clientIP) {
   const isMedia = pathname.match(/\.(ts|m4s|mp4|webm|avi|mov|mkv|mp3|wav|ogg|m4a|flac|aac|m3u8|mpd)$/i);
 
   if (shouldCache) {
-    if (isPathUnderAttack(pathname) && contentType.includes('application/json')) {
-      resHeaders.set('Cache-Control', `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}, stale-while-revalidate=0`);
-    } else {
-      resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
-    }
+    resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
     resHeaders.set('X-Cache', fromCache ? 'HIT' : 'MISS');
-    resHeaders.set('CF-Cache-Status', fromCache ? 'HIT' : 'MISS');
     resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -405,7 +373,12 @@ async function proxyRequestToOrigin(request, clientIP) {
         statusText: cachedResponse.statusText,
         headers: resHeaders
       });
-      await cache.put(cacheKey, newResponse.clone()).catch(() => {});
+      const putPromise = cache.put(cacheKey, newResponse.clone()).catch(() => {});
+      if (ctx && ctx.waitUntil) {
+        ctx.waitUntil(putPromise);
+      } else {
+        await putPromise;
+      }
       return newResponse;
     }
     return new Response(cachedResponse.body, {
@@ -421,7 +394,12 @@ async function proxyRequestToOrigin(request, clientIP) {
       statusText: cachedResponse.statusText,
       headers: resHeaders
     });
-    await cache.put(cacheKey, newResponse.clone()).catch(() => {});
+    const putPromise = cache.put(cacheKey, newResponse.clone()).catch(() => {});
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(putPromise);
+    } else {
+      await putPromise;
+    }
     return newResponse;
   }
 
@@ -432,48 +410,32 @@ async function proxyRequestToOrigin(request, clientIP) {
   });
 }
 
-export default async function middleware(request) {
+async function handler(request, env, ctx) {
   try {
     const clientIP = getClientIp(request);
-    
     const url = new URL(request.url);
     
     recordPathRequest(clientIP, url.pathname);
     
-    if (trustedIps.has(clientIP) || internalProxyIps.has(clientIP)) {
-      return await proxyRequestToOrigin(request, clientIP);
-    }
-
-    if (bannedIps.has(clientIP)) {
-      const until = bannedIps.get(clientIP);
-      if (Date.now() < until) {
-        return getSelfRedirectResponse(clientIP);
-      }
-      bannedIps.delete(clientIP);
+    const trustedIps = new Set();
+    const internalProxyIpsSet = new Set(INTERNAL_PROXY_IPS);
+    
+    if (trustedIps.has(clientIP) || internalProxyIpsSet.has(clientIP)) {
+      return await proxyRequestToOrigin(request, clientIP, ctx);
     }
 
     if (BLOCKED_IPS.includes(clientIP)) {
       return getSelfRedirectResponse(clientIP);
     }
 
-    const now = Date.now();
-
-    if (!ipRequests.has(clientIP)) {
-      ipRequests.set(clientIP, []);
+    const result = await proxyRequestToOrigin(request, clientIP, ctx);
+    
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(Promise.resolve(cleanMaps()));
+    } else {
+      cleanMaps();
     }
-    const timestamps = ipRequests.get(clientIP);
-    const windowStart = now - RATE_LIMIT_WINDOW_MS;
-    while (timestamps.length > 0 && timestamps[0] < windowStart) {
-      timestamps.shift();
-    }
-    if (timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-      recordViolation(clientIP);
-      return getSelfRedirectResponse(clientIP);
-    }
-    timestamps.push(now);
-
-    const result = await proxyRequestToOrigin(request, clientIP);
-    cleanMaps();
+    
     return result;
   } catch (error) {
     return new Response('Internal Server Error', { 
@@ -481,4 +443,14 @@ export default async function middleware(request) {
       headers: { 'Content-Type': 'text/plain' }
     });
   }
+}
+
+export default {
+  fetch(request, env, ctx) {
+    return handler(request, env, ctx);
+  }
+};
+
+export async function middleware(request) {
+  return handler(request, process.env, null);
 }
