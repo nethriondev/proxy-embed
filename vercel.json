@@ -3,5 +3,11 @@
     "api/proxy.js": {
       "runtime": "edge"
     }
-  }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/proxy.js"
+    }
+  ]
 }
