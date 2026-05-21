@@ -38,7 +38,7 @@ const getSelfRedirectResponse = (attackerIP) => {
   response.headers.set("x-skid-ip", `${attackerIP} - hina ng ddos mo tanga!`);
   response.headers.set("Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
   response.headers.set("CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
-  response.headers.set("Vary", "CF-Connecting-IP");
+  response.headers.delete("Vary");
   return response;
 };
 
@@ -376,9 +376,10 @@ async function proxyRequestToOrigin(request, clientIP) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     }
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
-    resHeaders.set('Vary', 'Accept-Encoding, Range');
+    resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    resHeaders.delete('Vary');
   }
 
   if (isMedia) {

@@ -4,8 +4,6 @@ const ORIGIN_URLS = [
   'https://apiremake-production-c01a.up.railway.app',
 ];
 
-// proxies
-
 const SERVERLESS_DOMAINS = [
   'onrender.com',
   'vercel.app',
@@ -38,7 +36,6 @@ const getSelfRedirectResponse = (attackerIP) => {
   response.headers.set("x-skid-ip", `${attackerIP} - hina ng ddos mo tanga!`);
   response.headers.set("Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
   response.headers.set("CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
-  response.headers.set("Vary", "CF-Connecting-IP");
   return response;
 };
 
@@ -403,10 +400,11 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
     resHeaders.set('X-Cache', fromCache ? 'HIT' : 'MISS');
     resHeaders.set('CF-Cache-Status', fromCache ? 'HIT' : 'MISS');
-    resHeaders.set('Vary', 'Accept-Encoding, Range');
+    resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
+    resHeaders.delete('Vary');
   }
 
   const isSegment = pathname.match(/\.(ts|m4s)$/i);
