@@ -3,7 +3,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "proxy.js"
+      "dest": "/api/proxy"
     }
   ],
   "env": {
