@@ -42,8 +42,6 @@ const getSelfRedirectResponse = (attackerIP) => {
   return response;
 };
 
-const startTime = Date.now();
-
 const ipRequests = new Map();
 const bannedIps = new Map();
 const violationCounts = new Map();
@@ -309,46 +307,56 @@ async function proxyRequestToOrigin(request, clientIP) {
   const pathname = url.pathname.toLowerCase();
   
   const rangeHeader = request.headers.get('range');
+  const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
+                  request.headers.get('pragma') === 'no-cache';
+
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString(), request);
+  let cachedResponse = await cache.match(cacheKey);
+  let fromCache = false;
   
-  const newHeaders = new Headers(request.headers);
-  newHeaders.set('x-forwarded-for', clientIP);
-  newHeaders.set('x-real-ip', clientIP);
-  newHeaders.set('cf-connecting-ip', clientIP);
+  if (cachedResponse && !noCache) {
+    fromCache = true;
+  } else {
+    const newHeaders = new Headers(request.headers);
+    newHeaders.set('x-forwarded-for', clientIP);
+    newHeaders.set('x-real-ip', clientIP);
+    newHeaders.set('cf-connecting-ip', clientIP);
 
-  const fetchOptions = {
-    method: request.method,
-    headers: newHeaders,
-  };
+    const fetchOptions = {
+      method: request.method,
+      headers: newHeaders,
+    };
 
-  if (rangeHeader) {
-    fetchOptions.headers.set('Range', rangeHeader);
+    if (rangeHeader) {
+      fetchOptions.headers.set('Range', rangeHeader);
+    }
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      fetchOptions.body = request.body;
+    }
+
+    try {
+      cachedResponse = await fetchFromFastestOrigin(url, fetchOptions);
+    } catch {
+      return new Response('Origin server error', {
+        status: 502,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
+
+    for (const originUrl of ORIGIN_URLS) {
+      if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
+      fetch(originUrl, { method: 'HEAD' }).catch(() => {});
+    }
   }
 
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    fetchOptions.body = request.body;
-  }
+  const contentType = cachedResponse.headers.get('content-type') || '';
+  const resHeaders = new Headers(cachedResponse.headers);
+  const contentLength = parseInt(cachedResponse.headers.get('content-length') || '0');
 
-  let originResponse;
-  try {
-    originResponse = await fetchFromFastestOrigin(url, fetchOptions);
-  } catch {
-    return new Response('Origin server error', {
-      status: 502,
-      headers: { 'Content-Type': 'text/plain' }
-    });
-  }
-
-  for (const originUrl of ORIGIN_URLS) {
-    if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
-    fetch(originUrl, { method: 'HEAD' }).catch(() => {});
-  }
-
-  const contentType = originResponse.headers.get('content-type') || '';
-  const resHeaders = new Headers(originResponse.headers);
-  const contentLength = parseInt(originResponse.headers.get('content-length') || '0');
-
-  if (originResponse.status === 206) {
-    const contentRange = originResponse.headers.get('content-range');
+  if (cachedResponse.status === 206) {
+    const contentRange = cachedResponse.headers.get('content-range');
     if (contentRange) {
       resHeaders.set('content-range', contentRange);
     }
@@ -357,16 +365,14 @@ async function proxyRequestToOrigin(request, clientIP) {
 
   resHeaders.delete('x-railway-edge');
   resHeaders.delete('x-railway-request-id');
-  resHeaders.delete('x-cache');
-  resHeaders.delete('cf-cache-status');
 
   resHeaders.set('Access-Control-Allow-Origin', '*');
   resHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, originResponse.status, contentLength);
-  const shouldCache = cacheTtl > 0 && (originResponse.status === 200 || originResponse.status === 206);
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, contentLength);
+  const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206);
   const isMedia = pathname.match(/\.(ts|m4s|mp4|webm|avi|mov|mkv|mp3|wav|ogg|m4a|flac|aac|m3u8|mpd)$/i);
 
   if (shouldCache) {
@@ -376,25 +382,40 @@ async function proxyRequestToOrigin(request, clientIP) {
       resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     }
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
+    resHeaders.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+    resHeaders.set('CF-Cache-Status', fromCache ? 'HIT' : 'MISS');
     resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     resHeaders.delete('Vary');
   }
 
-  if (isMedia) {
-    return new Response(originResponse.body, {
-      status: originResponse.status,
-      statusText: originResponse.statusText,
+  if (isMedia && shouldCache) {
+    if (!fromCache) {
+      const cacheClone = cachedResponse.clone();
+      await cache.put(cacheKey, cacheClone);
+    }
+    return new Response(cachedResponse.body, {
+      status: cachedResponse.status,
+      statusText: cachedResponse.statusText,
       headers: resHeaders
     });
   }
 
-  const responseBody = await originResponse.arrayBuffer();
+  const responseBody = await cachedResponse.arrayBuffer();
   
+  if (shouldCache && !noCache && !fromCache) {
+    const newResponse = new Response(responseBody, {
+      status: cachedResponse.status,
+      statusText: cachedResponse.statusText,
+      headers: resHeaders
+    });
+    await cache.put(cacheKey, newResponse.clone());
+  }
+
   return new Response(responseBody, {
-    status: originResponse.status,
-    statusText: originResponse.statusText,
+    status: cachedResponse.status,
+    statusText: cachedResponse.statusText,
     headers: resHeaders
   });
 }

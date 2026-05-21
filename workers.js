@@ -36,10 +36,9 @@ const getSelfRedirectResponse = (attackerIP) => {
   response.headers.set("x-skid-ip", `${attackerIP} - hina ng ddos mo tanga!`);
   response.headers.set("Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
   response.headers.set("CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
+  response.headers.delete("Vary");
   return response;
 };
-
-const startTime = Date.now();
 
 const ipRequests = new Map();
 const bannedIps = new Map();
