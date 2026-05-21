@@ -328,7 +328,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
   const noCache = request.headers.get('cache-control')?.includes('no-cache') || 
                   request.headers.get('pragma') === 'no-cache';
 
-  const cache = caches.default;
+  const cache = await caches.open('proxy-cache');
   const cacheKeyOptions = { method: request.method };
   if (rangeHeader) {
     cacheKeyOptions.headers = { Range: rangeHeader };
@@ -348,7 +348,12 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
     const fetchOptions = {
       method: request.method,
       headers: newHeaders,
-      cf: { polish: 'lossy', mirage: true }
+      cf: {
+        polish: 'lossy',
+        mirage: true,
+        cacheTtl: 3600,
+        cacheEverything: true
+      }
     };
 
     if (rangeHeader) {
@@ -423,7 +428,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
         statusText: cachedResponse.statusText,
         headers: resHeaders
       });
-      ctx.waitUntil(cache.put(cacheKey, newResponse.clone()));
+      ctx.waitUntil(cache.put(cacheKey, newResponse.clone()).catch(e => console.error('cache.put media failed', e)));
       return newResponse;
     }
     return new Response(cachedResponse.body, {
@@ -433,18 +438,17 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
     });
   }
 
-  const responseBody = await cachedResponse.arrayBuffer();
-  
   if (shouldCache && !noCache && !fromCache) {
-    const newResponse = new Response(responseBody, {
+    const newResponse = new Response(cachedResponse.body, {
       status: cachedResponse.status,
       statusText: cachedResponse.statusText,
       headers: resHeaders
     });
-    ctx.waitUntil(cache.put(cacheKey, newResponse.clone()));
+    ctx.waitUntil(cache.put(cacheKey, newResponse.clone()).catch(e => console.error('cache.put failed', e)));
+    return newResponse;
   }
 
-  return new Response(responseBody, {
+  return new Response(cachedResponse.body, {
     status: cachedResponse.status,
     statusText: cachedResponse.statusText,
     headers: resHeaders
