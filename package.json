@@ -5,5 +5,5 @@
   "engines": {
     "node": "24.x"
   },
-  "main": "api/proxy.js"
+  "main": "vercel.js"
 }
