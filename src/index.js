@@ -31,6 +31,7 @@ const getSelfRedirectResponse = (attackerIP) => {
   response.headers.set("x-skid-ip", `${attackerIP} - hina ng ddos mo tanga!`);
   response.headers.set("Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
   response.headers.set("CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
+  response.headers.set("Cloudflare-CDN-Cache-Control", `public, max-age=${CACHE_CONFIG.ATTACK_PUNISHMENT_TTL}`);
   response.headers.delete("Vary");
   return response;
 };
@@ -302,6 +303,12 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
     const fetchOptions = {
       method: request.method,
       headers: newHeaders,
+      cf: {
+        cacheTtl: 3600,
+        cacheEverything: true,
+        polish: 'lossy',
+        mirage: true
+      }
     };
 
     if (rangeHeader) {
@@ -358,56 +365,43 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
   if (shouldCache) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
+    resHeaders.set('Cloudflare-CDN-Cache-Control', `public, max-age=${cacheTtl}`);
     resHeaders.set('X-Cache', fromCache ? 'HIT' : 'MISS');
+    resHeaders.set('Cache-Tag', `path-${pathname.replace(/\//g, '-')}`);
     resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
+    resHeaders.set('Cloudflare-CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
     resHeaders.delete('Vary');
   }
 
-  if (isMedia && shouldCache) {
-    if (!fromCache) {
-      const newResponse = new Response(cachedResponse.body, {
-        status: cachedResponse.status,
-        statusText: cachedResponse.statusText,
-        headers: resHeaders
-      });
-      const putPromise = cache.put(cacheKey, newResponse.clone()).catch(() => {});
-      if (ctx && ctx.waitUntil) {
-        ctx.waitUntil(putPromise);
-      } else {
-        await putPromise;
-      }
-      return newResponse;
-    }
-    return new Response(cachedResponse.body, {
-      status: cachedResponse.status,
-      statusText: cachedResponse.statusText,
-      headers: resHeaders
-    });
-  }
+  const finalResponse = new Response(cachedResponse.body, {
+    status: cachedResponse.status,
+    statusText: cachedResponse.statusText,
+    headers: resHeaders
+  });
 
   if (shouldCache && !noCache && !fromCache) {
-    const newResponse = new Response(cachedResponse.body, {
+    const cacheResponse = new Response(cachedResponse.body, {
       status: cachedResponse.status,
       statusText: cachedResponse.statusText,
-      headers: resHeaders
+      headers: {
+        ...resHeaders,
+        'Cache-Control': `max-age=${cacheTtl}`,
+        'CDN-Cache-Control': `max-age=${cacheTtl}`,
+        'Cloudflare-CDN-Cache-Control': `max-age=${cacheTtl}`
+      }
     });
-    const putPromise = cache.put(cacheKey, newResponse.clone()).catch(() => {});
+    const putPromise = cache.put(cacheKey, cacheResponse.clone()).catch((e) => console.error('cache.put failed:', e));
     if (ctx && ctx.waitUntil) {
       ctx.waitUntil(putPromise);
     } else {
       await putPromise;
     }
-    return newResponse;
   }
 
-  return new Response(cachedResponse.body, {
-    status: cachedResponse.status,
-    statusText: cachedResponse.statusText,
-    headers: resHeaders
-  });
+  return finalResponse;
 }
 
 async function handler(request, env, ctx) {
@@ -438,6 +432,7 @@ async function handler(request, env, ctx) {
     
     return result;
   } catch (error) {
+    console.error('Handler error:', error);
     return new Response('Internal Server Error', { 
       status: 500,
       headers: { 'Content-Type': 'text/plain' }
