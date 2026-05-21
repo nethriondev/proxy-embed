@@ -8,12 +8,5 @@
   ],
   "env": {
     "NODE_ENV": "production"
-  },
-  "functions": {
-    "proxy.js": {
-      "runtime": "@vercel/node@3.0.0",
-      "maxDuration": 10,
-      "memory": 1024
-    }
   }
 }
