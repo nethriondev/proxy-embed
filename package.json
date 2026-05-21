@@ -4,5 +4,6 @@
   "type": "module",
   "engines": {
     "node": "24.x"
-  }
+  },
+  "main": "api/proxy.js"
 }
