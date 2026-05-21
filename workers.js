@@ -424,6 +424,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
         headers: resHeaders
       });
       ctx.waitUntil(cache.put(cacheKey, newResponse.clone()));
+      return newResponse;
     }
     return new Response(cachedResponse.body, {
       status: cachedResponse.status,

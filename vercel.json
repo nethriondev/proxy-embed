@@ -15,12 +15,5 @@
   "env": {
     "NODE_ENV": "production"
   },
-  "functions": {
-    "proxy.js": {
-      "runtime": "nodejs20.x",
-      "maxDuration": 10,
-      "memory": 1024
-    }
-  },
   "headers": []
 }

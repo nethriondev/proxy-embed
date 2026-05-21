@@ -406,6 +406,7 @@ async function proxyRequestToOrigin(request, clientIP) {
         headers: resHeaders
       });
       await cache.put(cacheKey, newResponse.clone());
+      return newResponse;
     }
     return new Response(cachedResponse.body, {
       status: cachedResponse.status,
