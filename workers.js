@@ -329,7 +329,11 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
                   request.headers.get('pragma') === 'no-cache';
 
   const cache = caches.default;
-  const cacheKey = new Request(url.toString(), request);
+  const cacheKeyOptions = { method: request.method };
+  if (rangeHeader) {
+    cacheKeyOptions.headers = { Range: rangeHeader };
+  }
+  const cacheKey = new Request(url.toString(), cacheKeyOptions);
   let cachedResponse = await cache.match(cacheKey);
   let fromCache = false;
   
@@ -344,7 +348,7 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
     const fetchOptions = {
       method: request.method,
       headers: newHeaders,
-      cf: { cacheEverything: true, polish: 'lossy', mirage: true }
+      cf: { polish: 'lossy', mirage: true }
     };
 
     if (rangeHeader) {
@@ -414,8 +418,12 @@ async function proxyRequestToOrigin(request, clientIP, env, ctx) {
 
   if (isMedia && shouldCache) {
     if (!fromCache) {
-      const cacheClone = cachedResponse.clone();
-      ctx.waitUntil(cache.put(cacheKey, cacheClone));
+      const newResponse = new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        statusText: cachedResponse.statusText,
+        headers: resHeaders
+      });
+      ctx.waitUntil(cache.put(cacheKey, newResponse.clone()));
     }
     return new Response(cachedResponse.body, {
       status: cachedResponse.status,

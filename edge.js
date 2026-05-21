@@ -172,7 +172,7 @@ const getClientIp = (request) => {
   return 'unknown';
 };
 
-function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, contentLength) {
+function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, contentLength, ext) {
   const pathname = url.pathname.toLowerCase();
   
   if (responseStatus < 200 || responseStatus >= 400) {
@@ -190,11 +190,13 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
     return 0;
   }
   
-  if (pathname.match(/\.(ts|m4s)$/i)) {
+  const effectivePath = ext ? pathname + ext.toLowerCase() : pathname;
+  
+  if (effectivePath.match(/\.(ts|m4s)$/i)) {
     return CACHE_CONFIG.SEGMENT_TTL;
   }
   
-  if (pathname.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
+  if (effectivePath.match(/\.(mp4|webm|avi|mov|mkv)$/i)) {
     if (contentLength > 10 * 1024 * 1024) {
       return 0;
     }
@@ -204,7 +206,7 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
     return CACHE_CONFIG.FULL_TTL;
   }
   
-  if (pathname.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
+  if (effectivePath.match(/\.(mp3|wav|ogg|m4a|flac|aac)$/i)) {
     if (contentLength > 10 * 1024 * 1024) {
       return 0;
     }
@@ -214,15 +216,15 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
     return CACHE_CONFIG.FULL_TTL;
   }
   
-  if (pathname.endsWith('.m3u8') || 
-      pathname.endsWith('.mpd') ||
+  if (effectivePath.endsWith('.m3u8') || 
+      effectivePath.endsWith('.mpd') ||
       responseContentType.includes('application/vnd.apple.mpegurl') ||
       responseContentType.includes('application/x-mpegurl') ||
       responseContentType.includes('application/dash+xml')) {
     return CACHE_CONFIG.MANIFEST_TTL;
   }
   
-  if (pathname.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
+  if (effectivePath.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)$/i)) {
     return CACHE_CONFIG.FULL_TTL;
   }
   
@@ -311,7 +313,11 @@ async function proxyRequestToOrigin(request, clientIP) {
                   request.headers.get('pragma') === 'no-cache';
 
   const cache = caches.default;
-  const cacheKey = new Request(url.toString(), request);
+  const cacheKeyOptions = { method: request.method };
+  if (rangeHeader) {
+    cacheKeyOptions.headers = { Range: rangeHeader };
+  }
+  const cacheKey = new Request(url.toString(), cacheKeyOptions);
   let cachedResponse = await cache.match(cacheKey);
   let fromCache = false;
   
@@ -371,7 +377,8 @@ async function proxyRequestToOrigin(request, clientIP) {
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
-  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, contentLength);
+  const ext = url.searchParams.get('ext') || undefined;
+  const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, contentLength, ext);
   const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206);
   const isMedia = pathname.match(/\.(ts|m4s|mp4|webm|avi|mov|mkv|mp3|wav|ogg|m4a|flac|aac|m3u8|mpd)$/i);
 
@@ -387,13 +394,18 @@ async function proxyRequestToOrigin(request, clientIP) {
     resHeaders.delete('Vary');
   } else {
     resHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, must-revalidate');
     resHeaders.delete('Vary');
   }
 
   if (isMedia && shouldCache) {
     if (!fromCache) {
-      const cacheClone = cachedResponse.clone();
-      await cache.put(cacheKey, cacheClone);
+      const newResponse = new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        statusText: cachedResponse.statusText,
+        headers: resHeaders
+      });
+      await cache.put(cacheKey, newResponse.clone());
     }
     return new Response(cachedResponse.body, {
       status: cachedResponse.status,
