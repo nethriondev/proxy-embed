@@ -1,7 +1,7 @@
 const ORIGIN_URLS = [
   'https://segfault.nport.link',
   'https://anisekai.nport.link',
-  'https://apiremake-production-c01a.up.railway.app',
+  'https://apiremake-production-c01a.up.railway.app'
 ];
 
 const SERVERLESS_DOMAINS = [
@@ -203,57 +203,95 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
   return 0;
 }
 
+async function tryOrigin(originUrl, targetUrl, fetchOptions) {
+  const fetchUrl = new URL(targetUrl.toString());
+  fetchUrl.hostname = new URL(originUrl).hostname;
+  fetchUrl.protocol = 'https:';
+  fetchUrl.port = '443';
+
+  const response = await fetch(fetchUrl.toString(), fetchOptions);
+  if (response.status < 500) {
+    return response;
+  }
+  throw new Error(`${originUrl} returned ${response.status}`);
+}
+
 async function fetchFromFastestOrigin(url, fetchOptions) {
-  const promises = ORIGIN_URLS.map(async (originUrl) => {
-    const fetchUrl = new URL(url.toString());
-    fetchUrl.hostname = new URL(originUrl).hostname;
-    fetchUrl.protocol = 'https:';
-    fetchUrl.port = '443';
-
-    const response = await fetch(fetchUrl.toString(), fetchOptions);
-    if (response.status < 500) {
-      return response;
-    }
-    throw new Error(`${originUrl} returned ${response.status}`);
-  });
-
+  const tunnelOrigins = ORIGIN_URLS.filter(o => !o.includes('railway.app'));
+  const backupOrigins = ORIGIN_URLS.filter(o => o.includes('railway.app'));
+  
   try {
+    const promises = tunnelOrigins.map(origin => tryOrigin(origin, url, fetchOptions));
     return await Promise.any(promises);
   } catch {
+    for (const origin of backupOrigins) {
+      try {
+        return await tryOrigin(origin, url, fetchOptions);
+      } catch (e) {}
+    }
     throw new Error('All origins failed');
   }
 }
 
 async function fetchWebSocketFromFastestOrigin(request) {
-  const promises = ORIGIN_URLS.map(async (originUrl) => {
-    const wsUrl = new URL(request.url);
-    wsUrl.hostname = new URL(originUrl).hostname;
-    wsUrl.protocol = 'https:';
-    wsUrl.port = '443';
-
-    const wsHeaders = new Headers(request.headers);
-    wsHeaders.delete('connection');
-    wsHeaders.delete('upgrade');
-    wsHeaders.delete('sec-websocket-key');
-    wsHeaders.delete('sec-websocket-version');
-    wsHeaders.delete('sec-websocket-extensions');
-    wsHeaders.delete('sec-websocket-accept');
-
-    const response = await fetch(wsUrl.toString(), {
-      method: request.method,
-      headers: wsHeaders,
-      body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-      duplex: 'half'
-    });
-    if (response.status === 101 || response.status < 500) {
-      return response;
-    }
-    throw new Error(`${originUrl} returned ${response.status}`);
-  });
-
+  const tunnelOrigins = ORIGIN_URLS.filter(o => !o.includes('railway.app'));
+  const backupOrigins = ORIGIN_URLS.filter(o => o.includes('railway.app'));
+  
   try {
+    const promises = tunnelOrigins.map(async (origin) => {
+      const wsUrl = new URL(request.url);
+      wsUrl.hostname = new URL(origin).hostname;
+      wsUrl.protocol = 'https:';
+      wsUrl.port = '443';
+
+      const wsHeaders = new Headers(request.headers);
+      wsHeaders.delete('connection');
+      wsHeaders.delete('upgrade');
+      wsHeaders.delete('sec-websocket-key');
+      wsHeaders.delete('sec-websocket-version');
+      wsHeaders.delete('sec-websocket-extensions');
+      wsHeaders.delete('sec-websocket-accept');
+
+      const response = await fetch(wsUrl.toString(), {
+        method: request.method,
+        headers: wsHeaders,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+        duplex: 'half'
+      });
+      if (response.status === 101 || response.status < 500) {
+        return response;
+      }
+      throw new Error(`${origin} returned ${response.status}`);
+    });
     return await Promise.any(promises);
   } catch {
+    for (const origin of backupOrigins) {
+      try {
+        const wsUrl = new URL(request.url);
+        wsUrl.hostname = new URL(origin).hostname;
+        wsUrl.protocol = 'https:';
+        wsUrl.port = '443';
+
+        const wsHeaders = new Headers(request.headers);
+        wsHeaders.delete('connection');
+        wsHeaders.delete('upgrade');
+        wsHeaders.delete('sec-websocket-key');
+        wsHeaders.delete('sec-websocket-version');
+        wsHeaders.delete('sec-websocket-extensions');
+        wsHeaders.delete('sec-websocket-accept');
+
+        const response = await fetch(wsUrl.toString(), {
+          method: request.method,
+          headers: wsHeaders,
+          body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+          duplex: 'half'
+        });
+        if (response.status === 101 || response.status < 500) {
+          return response;
+        }
+        throw new Error(`${origin} returned ${response.status}`);
+      } catch (e) {}
+    }
     throw new Error('All WebSocket origins failed');
   }
 }
@@ -465,4 +503,3 @@ export default {
     return handler(request, env, ctx);
   }
 };
-
