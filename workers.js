@@ -1,7 +1,7 @@
 const ORIGIN_URLS = [
   'https://segfault.nport.link',
   'https://anisekai.nport.link',
-  'http://146.70.240.205:43791',
+  'http://146.70.240.205:33617',
   'https://apiremake-production-c01a.up.railway.app'
 ];
 
