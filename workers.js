@@ -206,9 +206,10 @@ function getCacheTtl(url, responseContentType, hasRangeHeader, responseStatus, c
 
 async function tryOrigin(originUrl, targetUrl, fetchOptions) {
   const fetchUrl = new URL(targetUrl.toString());
-  fetchUrl.hostname = new URL(originUrl).hostname;
-  fetchUrl.protocol = 'https:';
-  fetchUrl.port = '443';
+  const originParsed = new URL(originUrl);
+  fetchUrl.hostname = originParsed.hostname;
+  fetchUrl.protocol = originParsed.protocol;
+  fetchUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
 
   const response = await fetch(fetchUrl.toString(), fetchOptions);
   if (response.status < 500) {
@@ -241,9 +242,10 @@ async function fetchWebSocketFromFastestOrigin(request) {
   try {
     const promises = tunnelOrigins.map(async (origin) => {
       const wsUrl = new URL(request.url);
-      wsUrl.hostname = new URL(origin).hostname;
-      wsUrl.protocol = 'https:';
-      wsUrl.port = '443';
+      const originParsed = new URL(origin);
+      wsUrl.hostname = originParsed.hostname;
+      wsUrl.protocol = originParsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
 
       const wsHeaders = new Headers(request.headers);
       wsHeaders.delete('connection');
@@ -269,9 +271,10 @@ async function fetchWebSocketFromFastestOrigin(request) {
     for (const origin of backupOrigins) {
       try {
         const wsUrl = new URL(request.url);
-        wsUrl.hostname = new URL(origin).hostname;
-        wsUrl.protocol = 'https:';
-        wsUrl.port = '443';
+        const originParsed = new URL(origin);
+        wsUrl.hostname = originParsed.hostname;
+        wsUrl.protocol = originParsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
 
         const wsHeaders = new Headers(request.headers);
         wsHeaders.delete('connection');
@@ -336,15 +339,14 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
                   request.headers.get('pragma') === 'no-cache';
 
   const cache = await getCache();
-  const cacheKeyOptions = { method: request.method };
-  if (rangeHeader) {
-    cacheKeyOptions.headers = { Range: rangeHeader };
-  }
-  const cacheKey = new Request(url.toString(), cacheKeyOptions);
   let cachedResponse = null;
   let fromCache = false;
   
   if (cache) {
+    const cacheKey = new Request(url.toString(), {
+      method: request.method,
+      headers: rangeHeader ? { Range: rangeHeader } : undefined
+    });
     cachedResponse = await cache.match(cacheKey);
   }
   
@@ -388,9 +390,10 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
     for (const originUrl of ORIGIN_URLS) {
       if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
       const warmUrl = new URL(url.toString());
-      warmUrl.hostname = new URL(originUrl).hostname;
-      warmUrl.protocol = 'https:';
-      warmUrl.port = '443';
+      const originParsed = new URL(originUrl);
+      warmUrl.hostname = originParsed.hostname;
+      warmUrl.protocol = originParsed.protocol;
+      warmUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
       const promise = fetch(warmUrl.toString(), { method: 'HEAD' }).catch(() => {});
       if (ctx && ctx.waitUntil) {
         ctx.waitUntil(promise);
@@ -455,6 +458,11 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
       headers: cacheHeaders
     });
 
+    const cacheKey = new Request(url.toString(), {
+      method: request.method,
+      headers: rangeHeader ? { Range: rangeHeader } : undefined
+    });
+    
     const putPromise = cache.put(cacheKey, cacheResponse).catch((e) => console.error('cache.put failed:', e));
     if (ctx && ctx.waitUntil) {
       ctx.waitUntil(putPromise);
