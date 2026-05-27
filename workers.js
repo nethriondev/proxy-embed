@@ -211,36 +211,42 @@ async function tryOrigin(originUrl, targetUrl, fetchOptions) {
   fetchUrl.protocol = originParsed.protocol;
   fetchUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
 
-  const response = await fetch(fetchUrl.toString(), fetchOptions);
-  if (response.status < 500) {
-    return response;
+  try {
+    const response = await fetch(fetchUrl.toString(), fetchOptions);
+    if (response.status < 500) {
+      return { response, origin: originUrl, success: true };
+    }
+    return { response: null, origin: originUrl, success: false, error: `HTTP ${response.status}` };
+  } catch (error) {
+    return { response: null, origin: originUrl, success: false, error: error.message };
   }
-  throw new Error(`${originUrl} returned ${response.status}`);
 }
 
 async function fetchFromFastestOrigin(url, fetchOptions) {
-  const tunnelOrigins = ORIGIN_URLS.filter(o => !o.includes('railway.app'));
-  const backupOrigins = ORIGIN_URLS.filter(o => o.includes('railway.app'));
+  const origins = [...ORIGIN_URLS];
+  const results = [];
   
-  try {
-    const promises = tunnelOrigins.map(origin => tryOrigin(origin, url, fetchOptions));
-    return await Promise.any(promises);
-  } catch {
-    for (const origin of backupOrigins) {
-      try {
-        return await tryOrigin(origin, url, fetchOptions);
-      } catch (e) {}
+  for (const origin of origins) {
+    const result = await tryOrigin(origin, url, fetchOptions);
+    if (result.success) {
+      results.push(result);
+    } else {
+      console.error(`Origin ${origin} failed: ${result.error}`);
     }
+  }
+  
+  if (results.length === 0) {
     throw new Error('All origins failed');
   }
+  
+  return results[0].response;
 }
 
 async function fetchWebSocketFromFastestOrigin(request) {
-  const tunnelOrigins = ORIGIN_URLS.filter(o => !o.includes('railway.app'));
-  const backupOrigins = ORIGIN_URLS.filter(o => o.includes('railway.app'));
+  const origins = [...ORIGIN_URLS];
   
-  try {
-    const promises = tunnelOrigins.map(async (origin) => {
+  for (const origin of origins) {
+    try {
       const wsUrl = new URL(request.url);
       const originParsed = new URL(origin);
       wsUrl.hostname = originParsed.hostname;
@@ -261,43 +267,16 @@ async function fetchWebSocketFromFastestOrigin(request) {
         body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
         duplex: 'half'
       });
+      
       if (response.status === 101 || response.status < 500) {
         return response;
       }
-      throw new Error(`${origin} returned ${response.status}`);
-    });
-    return await Promise.any(promises);
-  } catch {
-    for (const origin of backupOrigins) {
-      try {
-        const wsUrl = new URL(request.url);
-        const originParsed = new URL(origin);
-        wsUrl.hostname = originParsed.hostname;
-        wsUrl.protocol = originParsed.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
-
-        const wsHeaders = new Headers(request.headers);
-        wsHeaders.delete('connection');
-        wsHeaders.delete('upgrade');
-        wsHeaders.delete('sec-websocket-key');
-        wsHeaders.delete('sec-websocket-version');
-        wsHeaders.delete('sec-websocket-extensions');
-        wsHeaders.delete('sec-websocket-accept');
-
-        const response = await fetch(wsUrl.toString(), {
-          method: request.method,
-          headers: wsHeaders,
-          body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-          duplex: 'half'
-        });
-        if (response.status === 101 || response.status < 500) {
-          return response;
-        }
-        throw new Error(`${origin} returned ${response.status}`);
-      } catch (e) {}
+    } catch (e) {
+      console.error(`WebSocket origin ${origin} failed:`, e.message);
     }
-    throw new Error('All WebSocket origins failed');
   }
+  
+  throw new Error('All WebSocket origins failed');
 }
 
 async function getCache() {
@@ -381,7 +360,7 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
     try {
       cachedResponse = await fetchFromFastestOrigin(url, fetchOptions);
     } catch {
-      return new Response('Origin server error', {
+      return new Response('All origin servers failed', {
         status: 502,
         headers: { 'Content-Type': 'text/plain' }
       });
@@ -389,15 +368,17 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
 
     for (const originUrl of ORIGIN_URLS) {
       if (!SERVERLESS_DOMAINS.some(d => originUrl.includes(d))) continue;
-      const warmUrl = new URL(url.toString());
-      const originParsed = new URL(originUrl);
-      warmUrl.hostname = originParsed.hostname;
-      warmUrl.protocol = originParsed.protocol;
-      warmUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
-      const promise = fetch(warmUrl.toString(), { method: 'HEAD' }).catch(() => {});
-      if (ctx && ctx.waitUntil) {
-        ctx.waitUntil(promise);
-      }
+      try {
+        const warmUrl = new URL(url.toString());
+        const originParsed = new URL(originUrl);
+        warmUrl.hostname = originParsed.hostname;
+        warmUrl.protocol = originParsed.protocol;
+        warmUrl.port = originParsed.port || (originParsed.protocol === 'https:' ? '443' : '80');
+        const promise = fetch(warmUrl.toString(), { method: 'HEAD' }).catch(() => {});
+        if (ctx && ctx.waitUntil) {
+          ctx.waitUntil(promise);
+        }
+      } catch (e) {}
     }
   }
 
