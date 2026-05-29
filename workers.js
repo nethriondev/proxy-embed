@@ -247,8 +247,11 @@ async function tryOrigin(originUrl, targetUrl, fetchOptions) {
   }
 }
 
-async function fetchFromFastestOrigin(url, fetchOptions) {
+async function fetchFromFastestOrigin(url, fetchOptions, bodyBuffer = null) {
   for (const origin of ORIGIN_URLS) {
+    if (bodyBuffer) {
+      fetchOptions.body = bodyBuffer.slice(0);
+    }
     const result = await tryOrigin(origin, url, fetchOptions);
     if (result.success && result.response) {
       return result.response;
@@ -358,17 +361,18 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
       }
     };
 
+    let bodyBuffer = null;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      bodyBuffer = await request.clone().arrayBuffer();
+      fetchOptions.duplex = 'half';
+    }
+
     if (rangeHeader) {
       fetchOptions.headers.set('Range', rangeHeader);
     }
 
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      fetchOptions.body = request.body;
-      fetchOptions.duplex = 'half';
-    }
-
     try {
-      cachedResponse = await fetchFromFastestOrigin(url, fetchOptions);
+      cachedResponse = await fetchFromFastestOrigin(url, fetchOptions, bodyBuffer);
     } catch {
       return new Response('All origin servers failed', {
         status: 502,
