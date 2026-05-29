@@ -226,7 +226,11 @@ async function tryOrigin(originUrl, targetUrl, fetchOptions) {
       return { response, origin: originUrl, success: true };
     }
     
-    return { response: null, origin: originUrl, success: false, error: `HTTP ${response.status}` };
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      return { response: null, origin: originUrl, success: false, error: `HTTP ${response.status}` };
+    }
+    
+    return { response, origin: originUrl, success: true };
   } catch (error) {
     if (error.message.includes('1003') || error.message.includes('blocked')) {
       return { response: null, origin: originUrl, success: false, error: 'Origin blocked by Cloudflare' };
