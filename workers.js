@@ -1,5 +1,4 @@
 const ORIGIN_URLS = [
-  'https://segfault.nport.link',
   'http://zephyr.proxy.rlwy.net:28090'
 ];
 
