@@ -1,5 +1,6 @@
 const ORIGIN_URLS = [
-  'http://zephyr.proxy.rlwy.net:28090'
+  'https://restapi-production-7f23.up.railway.app',
+  'https://shinkansen.proxy.rlwy.net:14510'
 ];
 
 const SERVERLESS_DOMAINS = [
