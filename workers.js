@@ -1,6 +1,6 @@
 const ORIGIN_URLS = [
   'https://restapi-production-7f23.up.railway.app',
-  'https://shinkansen.proxy.rlwy.net:14510'
+  'http://shinkansen.proxy.rlwy.net:14510'
 ];
 
 const SERVERLESS_DOMAINS = [
@@ -414,9 +414,24 @@ async function proxyRequestToOrigin(request, clientIP, ctx) {
   resHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Stream, Range');
   resHeaders.set('Access-Control-Expose-Headers', '*');
 
+  if (cachedResponse.status >= 300 && cachedResponse.status < 400) {
+    resHeaders.set('Cache-Control', 'no-cache, no-store, private, must-revalidate');
+    resHeaders.set('CDN-Cache-Control', 'no-cache, no-store, private, must-revalidate');
+    resHeaders.set('Cloudflare-CDN-Cache-Control', 'no-cache, no-store, private, must-revalidate');
+    resHeaders.delete('Vary');
+    
+    const finalResponse = new Response(cachedResponse.body, {
+      status: cachedResponse.status,
+      statusText: cachedResponse.statusText,
+      headers: resHeaders
+    });
+    return finalResponse;
+  }
+
   const ext = url.searchParams.get('ext') || undefined;
   const cacheTtl = getCacheTtl(url, contentType, !!rangeHeader, cachedResponse.status, contentLength, ext);
   const shouldCache = cacheTtl > 0 && (cachedResponse.status === 200 || cachedResponse.status === 206);
+  
   if (shouldCache) {
     resHeaders.set('Cache-Control', `public, max-age=${cacheTtl}, stale-while-revalidate=${Math.floor(cacheTtl/2)}`);
     resHeaders.set('CDN-Cache-Control', `public, max-age=${cacheTtl}`);
